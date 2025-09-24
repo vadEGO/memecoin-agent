@@ -183,3 +183,16 @@ Vetting Status:
 - `package.json` - Added vet and task scripts
 - Database schema - Added settings table and v_tokens_candidates view
 
+
+## 2025-09-24 – Task 7: Holder Snapshot + Fresh Wallets
+**Branch:** task-7-holder-snapshot-fresh-wallets
+**PR:** (link after opening)
+
+### Core Task
+- [ ] TODO
+
+### Stretch (optional)
+- [ ] TODO
+
+### Output / Notes
+- Evidence here
