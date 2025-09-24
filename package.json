@@ -10,9 +10,19 @@
     "tunnel": "node start-tunnel.js",
     "db:init": "node db/init.js",
     "db:migrate": "node db/migrate.js",
-    "cli": "node cli.js"
+    "cli": "node cli.js",
+    "pump": "node pump-client.js"
   },
-  "keywords": ["solana", "memecoin", "webhook", "tokens", "blockchain", "sqlite", "helius", "defi"],
+  "keywords": [
+    "solana",
+    "memecoin",
+    "webhook",
+    "tokens",
+    "blockchain",
+    "sqlite",
+    "helius",
+    "defi"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
@@ -21,6 +31,7 @@
     "dayjs": "^1.11.13",
     "express": "^4.21.2",
     "express-rate-limit": "^7.4.1",
-    "ngrok": "^5.0.0"
+    "ngrok": "^4.3.3",
+    "ws": "^8.18.3"
   }
 }

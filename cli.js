@@ -1,73 +1,69 @@
+// cli.js
 const Database = require('better-sqlite3');
 const db = new Database('db/agent.db');
 
 const cmd = process.argv[2] || 'recent';
 
-if (cmd === 'recent') {
+function showRecent(limit = 20) {
   const rows = db.prepare(`
     SELECT mint, symbol, name, source, first_seen_at
     FROM tokens
-    ORDER BY first_seen_at DESC
-    LIMIT 20
-  `).all();
+    ORDER BY datetime(first_seen_at) DESC
+    LIMIT ?
+  `).all(limit);
   console.table(rows);
-} else if (cmd === 'events') {
-  const mint = process.argv[3]; 
-  if (!mint) { 
-    console.log('Usage: node cli.js events <MINT>'); 
-    process.exit(1); 
-  }
+}
+
+function showRecentPump(limit = 20) {
+  const rows = db.prepare(`
+    SELECT mint, symbol, name, first_seen_at
+    FROM tokens
+    WHERE source = 'pump.fun'
+    ORDER BY datetime(first_seen_at) DESC
+    LIMIT ?
+  `).all(limit);
+  console.table(rows);
+}
+
+function showEvents(mint) {
+  if (!mint) { console.log('Usage: node cli.js events <MINT>'); process.exit(1); }
   const evts = db.prepare(`
-    SELECT type, source, received_at, signature
-    FROM token_events WHERE mint = ? ORDER BY received_at DESC LIMIT 50
+    SELECT type, source, received_at, substr(signature,1,12) AS signature
+    FROM token_events
+    WHERE mint = ?
+    ORDER BY datetime(received_at) DESC
+    LIMIT 100
   `).all(mint);
   console.table(evts);
+}
+
+function showStats() {
+  const totals = db.prepare(`SELECT COUNT(*) AS tokens FROM tokens`).get();
+  const bySource = db.prepare(`
+    SELECT source, COUNT(*) AS tokens
+    FROM tokens GROUP BY source ORDER BY tokens DESC
+  `).all();
+  const events = db.prepare(`SELECT COUNT(*) AS events FROM token_events`).get();
+  const eventsBySource = db.prepare(`
+    SELECT source, COUNT(*) AS events
+    FROM token_events GROUP BY source ORDER BY events DESC
+  `).all();
+  console.log('\nTokens total:', totals.tokens);
+  console.table(bySource);
+  console.log('\nEvents total:', events.events);
+  console.table(eventsBySource);
+}
+
+if (cmd === 'recent') {
+  const n = Number(process.argv[3]) || 20;
+  showRecent(n);
+} else if (cmd === 'recent-pump') {
+  const n = Number(process.argv[3]) || 20;
+  showRecentPump(n);
+} else if (cmd === 'events') {
+  showEvents(process.argv[3]);
 } else if (cmd === 'stats') {
-  const stats = db.prepare(`
-    SELECT 
-      source,
-      type,
-      COUNT(*) as count,
-      COUNT(DISTINCT mint) as unique_mints,
-      COUNT(DISTINCT signature) as unique_signatures
-    FROM token_events 
-    GROUP BY source, type
-    ORDER BY count DESC
-  `).all();
-  console.log('📊 Event Statistics:');
-  console.table(stats);
-  
-  const totalEvents = db.prepare('SELECT COUNT(*) as total FROM token_events').get();
-  const totalTokens = db.prepare('SELECT COUNT(*) as total FROM tokens').get();
-  
-  console.log(`\n📈 Summary:`);
-  console.log(`   Total Events: ${totalEvents.total}`);
-  console.log(`   Total Tokens: ${totalTokens.total}`);
-} else if (cmd === 'duplicates') {
-  const duplicates = db.prepare(`
-    SELECT 
-      mint, 
-      type, 
-      signature,
-      COUNT(*) as count,
-      GROUP_CONCAT(received_at) as timestamps
-    FROM token_events 
-    GROUP BY mint, type, received_at
-    HAVING COUNT(*) > 1
-    ORDER BY count DESC
-    LIMIT 20
-  `).all();
-  
-  if (duplicates.length === 0) {
-    console.log('✅ No duplicate events found!');
-  } else {
-    console.log('⚠️  Duplicate events found:');
-    console.table(duplicates);
-  }
+  showStats();
 } else {
-  console.log('Commands:');
-  console.log('  recent     - Show recent tokens');
-  console.log('  events <MINT> - Show events for specific mint');
-  console.log('  stats      - Show event statistics');
-  console.log('  duplicates - Show duplicate events');
+  console.log('Commands: recent [N] | recent-pump [N] | events <MINT> | stats');
 }
