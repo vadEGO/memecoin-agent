@@ -9,6 +9,7 @@
     "dev": "node webhook-server.js",
     "tunnel": "node start-tunnel.js",
     "db:init": "node db/init.js",
+    "db:migrate": "node db/migrate.js",
     "cli": "node cli.js"
   },
   "keywords": ["solana", "memecoin", "webhook", "tokens", "blockchain", "sqlite", "helius", "defi"],

@@ -29,11 +29,27 @@ CREATE TABLE IF NOT EXISTS token_events (
   type TEXT,
   source TEXT,
   received_at TEXT,
-  raw_json TEXT
+  raw_json TEXT,
+  signature TEXT,
+  UNIQUE(mint, type, received_at),
+  UNIQUE(signature, type)
 );
 
+-- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_token_events_mint_time
 ON token_events (mint, received_at);
+
+CREATE INDEX IF NOT EXISTS idx_token_events_signature
+ON token_events (signature);
+
+CREATE INDEX IF NOT EXISTS idx_token_events_type
+ON token_events (type);
+
+CREATE INDEX IF NOT EXISTS idx_token_events_source
+ON token_events (source);
 `);
 
 console.log('✅ DB schema ready at db/agent.db');
+console.log('🔍 Added deduplication indexes:');
+console.log('   - UNIQUE(mint, type, received_at)');
+console.log('   - UNIQUE(signature, type)');

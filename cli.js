@@ -18,10 +18,56 @@ if (cmd === 'recent') {
     process.exit(1); 
   }
   const evts = db.prepare(`
-    SELECT type, source, received_at
+    SELECT type, source, received_at, signature
     FROM token_events WHERE mint = ? ORDER BY received_at DESC LIMIT 50
   `).all(mint);
   console.table(evts);
+} else if (cmd === 'stats') {
+  const stats = db.prepare(`
+    SELECT 
+      source,
+      type,
+      COUNT(*) as count,
+      COUNT(DISTINCT mint) as unique_mints,
+      COUNT(DISTINCT signature) as unique_signatures
+    FROM token_events 
+    GROUP BY source, type
+    ORDER BY count DESC
+  `).all();
+  console.log('📊 Event Statistics:');
+  console.table(stats);
+  
+  const totalEvents = db.prepare('SELECT COUNT(*) as total FROM token_events').get();
+  const totalTokens = db.prepare('SELECT COUNT(*) as total FROM tokens').get();
+  
+  console.log(`\n📈 Summary:`);
+  console.log(`   Total Events: ${totalEvents.total}`);
+  console.log(`   Total Tokens: ${totalTokens.total}`);
+} else if (cmd === 'duplicates') {
+  const duplicates = db.prepare(`
+    SELECT 
+      mint, 
+      type, 
+      signature,
+      COUNT(*) as count,
+      GROUP_CONCAT(received_at) as timestamps
+    FROM token_events 
+    GROUP BY mint, type, received_at
+    HAVING COUNT(*) > 1
+    ORDER BY count DESC
+    LIMIT 20
+  `).all();
+  
+  if (duplicates.length === 0) {
+    console.log('✅ No duplicate events found!');
+  } else {
+    console.log('⚠️  Duplicate events found:');
+    console.table(duplicates);
+  }
 } else {
-  console.log('Commands: recent | events <MINT>');
+  console.log('Commands:');
+  console.log('  recent     - Show recent tokens');
+  console.log('  events <MINT> - Show events for specific mint');
+  console.log('  stats      - Show event statistics');
+  console.log('  duplicates - Show duplicate events');
 }
