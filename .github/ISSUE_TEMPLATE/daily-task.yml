@@ -1,0 +1,16 @@
+name: "Daily Task"
+description: Track a single daily build task
+labels: ["daily-task"]
+body:
+  - type: input
+    id: title
+    attributes: { label: Task title, placeholder: "Task 6 — Initial Vetting" }
+  - type: textarea
+    id: core
+    attributes: { label: Core steps, placeholder: "- Step 1\n- Step 2" }
+  - type: textarea
+    id: stretch
+    attributes: { label: Stretch idea (optional) }
+  - type: textarea
+    id: acceptance
+    attributes: { label: Acceptance checks, placeholder: "- [ ] Check 1\n- [ ] Check 2" }

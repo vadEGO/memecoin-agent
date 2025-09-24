@@ -4,14 +4,14 @@
   "description": "Real-time memecoin detection and tracking system with Helius webhooks and SQLite persistence",
   "main": "webhook-server.js",
   "scripts": {
+    "task:new": "node bin/new-task.js",
+    "task:finish": "node bin/finish-task.js",
     "start": "node webhook-server.js",
-    "test": "node test-webhook.js",
-    "dev": "node webhook-server.js",
-    "tunnel": "node start-tunnel.js",
-    "db:init": "node db/init.js",
-    "db:migrate": "node db/migrate.js",
+    "pump": "node pump-client.js",
     "cli": "node cli.js",
-    "pump": "node pump-client.js"
+    "db:init": "node db/init.js",
+    "test": "node test-webhook.js",
+    "vet": "node workers/vetting-worker.js"
   },
   "keywords": [
     "solana",
