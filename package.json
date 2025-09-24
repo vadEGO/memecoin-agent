@@ -1,0 +1,25 @@
+{
+  "name": "memecoin-agent",
+  "version": "1.0.0",
+  "description": "Real-time memecoin detection and tracking system with Helius webhooks and SQLite persistence",
+  "main": "webhook-server.js",
+  "scripts": {
+    "start": "node webhook-server.js",
+    "test": "node test-webhook.js",
+    "dev": "node webhook-server.js",
+    "tunnel": "node start-tunnel.js",
+    "db:init": "node db/init.js",
+    "cli": "node cli.js"
+  },
+  "keywords": ["solana", "memecoin", "webhook", "tokens", "blockchain", "sqlite", "helius", "defi"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@solana/web3.js": "^1.95.2",
+    "better-sqlite3": "^12.4.1",
+    "dayjs": "^1.11.13",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "ngrok": "^5.0.0"
+  }
+}
