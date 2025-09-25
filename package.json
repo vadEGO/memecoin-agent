@@ -11,7 +11,8 @@
     "cli": "node cli.js",
     "db:init": "node db/init.js",
     "test": "node test-webhook.js",
-    "vet": "node workers/vetting-worker.js"
+    "vet": "node workers/vetting-worker.js",
+    "enrich": "node enrich/worker.js"
   },
   "keywords": [
     "solana",
@@ -29,9 +30,11 @@
     "@solana/web3.js": "^1.95.2",
     "better-sqlite3": "^12.4.1",
     "dayjs": "^1.11.13",
+    "dotenv": "^17.2.2",
     "express": "^4.21.2",
     "express-rate-limit": "^7.4.1",
     "ngrok": "^4.3.3",
+    "node-fetch": "^3.3.2",
     "ws": "^8.18.3"
   }
 }
