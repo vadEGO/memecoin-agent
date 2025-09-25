@@ -19,7 +19,7 @@ function log(level, event, data = {}) {
     lvl: level,
     at: 'pump-client',
     event,
-    ts: Date.now(),
+    ts: new Date().toISOString(), // Normalized to ISO 8601 UTC
     ...data
   }));
 }
