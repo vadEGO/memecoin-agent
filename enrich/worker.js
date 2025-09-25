@@ -2,6 +2,7 @@
 require('dotenv').config();
 const Database = require('better-sqlite3');
 const { fetchJson, sleep } = require('../lib/http');
+const logger = require('../lib/logger');
 
 const db = new Database('db/agent.db');
 db.pragma('journal_mode = WAL');
@@ -63,7 +64,7 @@ const saveError = db.prepare(`
 // --- Enhanced API helpers ---
 async function fetchTokenMetadataHelius(mints) {
   if (!HELIUS_API_KEY || HELIUS_API_KEY === 'your_helius_key') {
-    console.log('⚠️  Skipping Helius metadata (no API key)');
+    logger.warning('enrichment', null, 'metadata', 'Skipping Helius metadata (no API key)');
     return {};
   }
 
@@ -82,7 +83,7 @@ async function fetchTokenMetadataHelius(mints) {
       }, { rateLimiter: 'helius', retries: 2, backoffMs: 1000 });
 
       if (!Array.isArray(arr) || arr.length === 0) {
-        console.log(`⚠️  Empty metadata response for batch of ${batch.length} mints`);
+        logger.warning('enrichment', null, 'metadata', `Empty metadata response for batch of ${batch.length} mints`);
         continue;
       }
 
@@ -102,7 +103,7 @@ async function fetchTokenMetadataHelius(mints) {
         };
       }
     } catch (error) {
-      console.error(`❌ Helius metadata batch failed:`, error.message);
+      logger.error('enrichment', null, 'metadata', `Helius metadata batch failed: ${error.message}`, { batchSize: batch.length });
       throw new Error(`HELIUS_META_${error.message}`);
     }
   }
@@ -112,7 +113,7 @@ async function fetchTokenMetadataHelius(mints) {
 
 async function fetchAuthoritiesRevoked(mint) {
   if (!HELIUS_API_KEY || HELIUS_API_KEY === 'your_helius_key') {
-    console.log('⚠️  Skipping authorities check (no API key)');
+    logger.warning('enrichment', mint, 'authorities', 'Skipping authorities check (no API key)');
     return null;
   }
 
@@ -147,7 +148,7 @@ async function fetchAuthoritiesRevoked(mint) {
     
     return { authorities_revoked: revoked };
   } catch (error) {
-    console.error(`❌ RPC authorities check failed for ${mint}:`, error.message);
+    logger.error('enrichment', mint, 'authorities', `RPC authorities check failed: ${error.message}`);
     throw new Error(`RPC_AUTH_${error.message}`);
   }
 }
@@ -179,7 +180,7 @@ async function fetchLiquidityDexScreener(mint) {
       liquidity_usd: maxUsd > 0 ? maxUsd : null 
     };
   } catch (error) {
-    console.error(`❌ DexScreener liquidity check failed for ${mint}:`, error.message);
+    logger.error('enrichment', mint, 'liquidity', `DexScreener liquidity check failed: ${error.message}`);
     throw new Error(`DEX_LIQ_${error.message}`);
   }
 }
@@ -223,10 +224,14 @@ async function enrichOne(token) {
       token.mint
     );
 
-    console.log(`✅ enriched ${token.mint} ${meta.symbol || ''} liq=$${liq.liquidity_usd ?? 'n/a'} revoked=${auth.authorities_revoked}`);
+    logger.success('enrichment', token.mint, 'complete', `Enriched successfully`, {
+      symbol: meta.symbol || '',
+      liquidity_usd: liq.liquidity_usd,
+      authorities_revoked: auth.authorities_revoked
+    });
   } catch (error) {
     const errorCode = error.message.slice(0, 120); // Truncate to 120 chars
-    console.error(`❌ enrich failed ${token.mint}:`, errorCode);
+    logger.error('enrichment', token.mint, 'failed', `Enrichment failed: ${errorCode}`);
     saveError.run(nowIso, errorCode, token.mint);
   }
 }
@@ -234,11 +239,11 @@ async function enrichOne(token) {
 async function mainLoop() {
   const batch = pickBatch.all();
   if (!batch.length) {
-    console.log('⏸ no tokens need enrichment');
+    logger.info('enrichment', null, 'batch', 'No tokens need enrichment');
     return;
   }
 
-  console.log(`🔄 Processing ${batch.length} tokens for enrichment`);
+  logger.info('enrichment', null, 'batch', `Processing ${batch.length} tokens for enrichment`, { batchSize: batch.length });
   
   for (const token of batch) {
     await enrichOne(token);
