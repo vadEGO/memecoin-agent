@@ -28,25 +28,30 @@ cd memecoin-agent
 npm install
 ```
 
-### Start the System
+### Dev Loop (One-Click Setup)
 ```bash
-# Terminal 1: Start webhook server
+# 1. Initialize database
+npm run db:init
+
+# 2. Start webhook server (Terminal 1)
 npm start
 
-# Terminal 2: Start Pump.fun WebSocket client
+# 3. Start Pump.fun WebSocket client (Terminal 2)
 npm run pump
+
+# 4. Monitor the data (Terminal 3)
+npm run cli -- stats
 ```
 
-### View Live Data
+### Environment Setup
 ```bash
-# View recent tokens
-npm run cli -- recent
+# Copy environment template
+cp .env.example .env
 
-# View recent Pump.fun tokens
-npm run cli -- recent-pump
-
-# View statistics
-npm run cli -- stats
+# Edit with your API keys (optional)
+# WEBHOOK_SECRET=your-secret-key-here
+# HELIUS_API_KEY=your-helius-api-key
+# BIRDEYE_API_KEY=your-birdeye-api-key
 ```
 
 ## 📋 CLI Commands
@@ -55,8 +60,10 @@ npm run cli -- stats
 |---------|-------------|---------|
 | `recent [N]` | Show recent tokens (default: 20) | `npm run cli -- recent 50` |
 | `recent-pump [N]` | Show recent Pump.fun tokens | `npm run cli -- recent-pump 10` |
+| `candidates [N]` | Show candidate tokens (filtered) | `npm run cli -- candidates 5` |
 | `events <MINT>` | Show events for specific token | `npm run cli -- events So111...` |
 | `stats` | Show comprehensive statistics | `npm run cli -- stats` |
+| `help` | Show help message | `npm run cli -- help` |
 
 ## 🏗️ Architecture
 
@@ -87,7 +94,7 @@ npm run cli -- stats
 │                    CLI Interface                               │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
 │  │   recent    │  │recent-pump  │  │        stats            │ │
-│  │   events    │  │   events    │  │      duplicates         │ │
+│  │   events    │  │candidates   │  │      duplicates         │ │
 │  └─────────────┘  └─────────────┘  └─────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -106,16 +113,29 @@ memecoin-agent/
 ├── 📁 data/                  # Data storage
 │   └── intake/              # JSONL files
 ├── 📁 docs/                  # Documentation
-│   └── daily-log.md         # Development progress log
-└── 📄 package.json          # Dependencies & scripts
+│   ├── daily-log.md         # Development progress log
+│   └── architecture.md      # System architecture
+├── 📁 workers/               # Background workers
+│   └── vetting-worker.js    # Token vetting worker
+├── 📁 bin/                   # Utility scripts
+│   ├── new-task.js          # Start new task
+│   └── finish-task.js       # Finish task
+└── 📄 .env.example          # Environment template
 ```
 
 ## 🔧 Configuration
 
 ### Environment Variables
 ```bash
-export WEBHOOK_SECRET=your-secret-key-here
-export HELIUS_API_KEY=your-helius-api-key
+# Required
+WEBHOOK_SECRET=your-secret-key-here
+
+# Optional
+HELIUS_API_KEY=your-helius-api-key
+BIRDEYE_API_KEY=your-birdeye-api-key
+PORT=3000
+WEBHOOK_URL=http://localhost:3000/webhook
+MIN_LIQ_USD=5000
 ```
 
 ### Webhook Endpoints
@@ -125,8 +145,8 @@ export HELIUS_API_KEY=your-helius-api-key
 
 ## 📊 Current Stats
 
-- **117 Total Tokens** (81 Pump.fun, 35 Helius, 1 Jupiter)
-- **175 Total Events** with deduplication
+- **311 Total Tokens** (229 Helius, 81 Pump.fun, 1 Jupiter)
+- **369 Total Events** with deduplication
 - **Real-time Detection** of new token launches
 - **Zero Duplicates** thanks to unique indexes
 
@@ -134,16 +154,14 @@ export HELIUS_API_KEY=your-helius-api-key
 
 ### Branch-per-Task Workflow
 ```bash
-# Create task branch
-git checkout -b task-XX-description
+# Start new task
+npm run task:new -- 7 "Holder Snapshot + Fresh Wallets"
 
-# Implement features
-# Test thoroughly
-# Document in docs/daily-log.md
+# Do the work, commit changes
+git add . && git commit -m "task(7): holder analysis"
 
-# Merge when complete
-git checkout main
-git merge task-XX-description
+# Finish task (opens PR or shows instructions)
+npm run task:finish -- 7
 ```
 
 ### Available Scripts
@@ -151,8 +169,10 @@ git merge task-XX-description
 npm start          # Start webhook server
 npm run pump       # Start Pump.fun WebSocket client
 npm run cli        # Run CLI commands
+npm run vet        # Run token vetting worker
 npm run tunnel     # Start ngrok tunnel
 npm run db:init    # Initialize database
+npm test           # Test webhook endpoint
 ```
 
 ## 🔒 Security
@@ -161,6 +181,8 @@ npm run db:init    # Initialize database
 - Shared secret authentication
 - Input validation and sanitization
 - SQL injection protection via prepared statements
+- Content-Type validation
+- Body size limits
 
 ## 📈 Performance
 
@@ -168,6 +190,7 @@ npm run db:init    # Initialize database
 - **Efficient Queries**: Optimized database queries with proper indexing
 - **Real-time Processing**: WebSocket integration for instant detection
 - **Scalable Storage**: JSONL + SQLite for different use cases
+- **Structured Logging**: JSON logs for better monitoring
 
 ## 🤝 Contributing
 

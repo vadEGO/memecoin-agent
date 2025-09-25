@@ -18,6 +18,17 @@ if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+// Structured logging
+function log(level, event, data = {}) {
+    console.log(JSON.stringify({
+        lvl: level,
+        at: 'webhook-server',
+        event,
+        ts: Date.now(),
+        ...data
+    }));
+}
+
 // Security middleware
 app.use('/webhook', rateLimit({ 
     windowMs: 10_000, // 10 seconds
@@ -27,6 +38,21 @@ app.use('/webhook', rateLimit({
 
 // Body parsing with size limit
 app.use(express.json({ limit: '256kb' }));
+
+// Content-Type validation middleware
+app.use('/webhook', (req, res, next) => {
+    if (req.method === 'POST' && !req.is('application/json')) {
+        log('warn', 'invalid_content_type', { 
+            contentType: req.get('Content-Type'),
+            ip: req.ip 
+        });
+        return res.status(400).json({ 
+            ok: false, 
+            error: 'Content-Type must be application/json' 
+        });
+    }
+    next();
+});
 
 // Helper function to append to JSONL file
 function appendToJsonl(data) {
@@ -40,6 +66,28 @@ function validateSecret(req) {
     return providedSecret === SHARED_SECRET;
 }
 
+// Clock hygiene - normalize to ISO 8601 UTC
+function normalizeTimestamp(timestamp) {
+    if (!timestamp) return new Date().toISOString();
+    
+    try {
+        // If it's already ISO format, return as-is
+        if (typeof timestamp === 'string' && timestamp.includes('T')) {
+            return new Date(timestamp).toISOString();
+        }
+        
+        // If it's a number (Unix timestamp), convert
+        if (typeof timestamp === 'number') {
+            return new Date(timestamp * 1000).toISOString();
+        }
+        
+        // Default to current time
+        return new Date().toISOString();
+    } catch (e) {
+        return new Date().toISOString();
+    }
+}
+
 // Helius payload normalization
 function normalizeHelius(body) {
     const out = { source: 'helius', type: body.type || 'unknown' };
@@ -48,120 +96,147 @@ function normalizeHelius(body) {
     const tokenEvt = body?.events?.token || {};
     const defiEvt = body?.events?.defi || {};
     const mint =
-        tokenEvt?.mint ||
-        tokenEvt?.tokenAccount ||
-        defiEvt?.mint ||
-        body?.mint ||
-        null;
+        tokenEvt.mint ||
+        defiEvt.mint ||
+        body.mint ||
+        body.tokenAddress ||
+        body.token_address;
 
-    const symbol = tokenEvt?.symbol || null;
-    const name = tokenEvt?.name || null;
-    const decimals = Number.isFinite(tokenEvt?.decimals) ? tokenEvt.decimals : null;
+    if (!mint) {
+        log('warn', 'no_mint_found', { source: 'helius', type: body.type });
+        return null;
+    }
+
+    out.mint = mint;
+    out.symbol = tokenEvt.symbol || body.symbol || null;
+    out.name = tokenEvt.name || body.name || null;
+    out.decimals = tokenEvt.decimals || body.decimals || null;
+    out.creator = tokenEvt.creator || body.creator || null;
+    out.launchTx = body.signature || body.tx || null;
+    out.createdAt = normalizeTimestamp(body.timestamp || body.createdAt);
+
+    return out;
+}
+
+// Generic payload normalization
+function normalizePayload(body) {
+    // Try Helius first
+    if (body.events || body.signature) {
+        return normalizeHelius(body);
+    }
+
+    // Generic fallback
+    const mint = body.mint || body.tokenAddress || body.token_address;
+    if (!mint) {
+        log('warn', 'no_mint_found', { source: body.source || 'unknown' });
+        return null;
+    }
 
     return {
-        ...out,
+        source: body.source || 'unknown',
+        type: body.type || 'unknown',
         mint,
-        symbol,
-        name,
-        decimals,
-        creator: tokenEvt?.owner || null,
-        launchTx: body.signature || null,
-        createdAt: body?.timestamp ? new Date(body.timestamp * 1000).toISOString() : null
+        symbol: body.symbol || null,
+        name: body.name || null,
+        decimals: body.decimals || null,
+        creator: body.creator || null,
+        launchTx: body.signature || body.tx || null,
+        createdAt: normalizeTimestamp(body.timestamp || body.createdAt)
     };
 }
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-    res.json({ ok: true });
+    res.json({ ok: true, timestamp: new Date().toISOString() });
 });
 
-// Stats endpoint for monitoring
-app.get('/stats', async (req, res) => {
+// Stats endpoint
+app.get('/stats', (req, res) => {
     try {
         const { getEventStats } = require('./db');
         const stats = getEventStats();
-        res.json({ 
-            ok: true, 
-            stats,
-            total_events: stats.reduce((sum, stat) => sum + stat.count, 0)
-        });
+        res.json({ ok: true, stats });
     } catch (error) {
+        log('error', 'stats_failed', { error: error.message });
         res.status(500).json({ ok: false, error: 'Failed to get stats' });
     }
 });
 
-// Webhook endpoint
+// Main webhook endpoint
 app.post('/webhook', (req, res) => {
+    const startTime = Date.now();
+    
     try {
         // Validate shared secret
         if (!validateSecret(req)) {
+            log('warn', 'invalid_secret', { ip: req.ip });
             return res.status(401).json({ 
                 ok: false, 
-                error: 'Invalid or missing shared secret' 
+                error: 'Invalid webhook secret' 
             });
         }
 
-        // Get the event data from request body
-        const eventData = req.body;
-        
-        // Normalize Helius payload if it's from Helius
-        let normalized = {};
-        if (req.body && (req.body.events || req.body.signature)) {
-            normalized = normalizeHelius(req.body);
+        // Normalize payload
+        const normalized = normalizePayload(req.body);
+        if (!normalized) {
+            log('warn', 'invalid_payload', { 
+                ip: req.ip,
+                bodyKeys: Object.keys(req.body)
+            });
+            return res.status(400).json({ 
+                ok: false, 
+                error: 'Invalid payload - missing mint address' 
+            });
         }
 
-        // Extract signature for deduplication
-        const signature = req.body.signature || req.body.txHash || null;
+        const { mint, source, type } = normalized;
+        const nowIso = new Date().toISOString();
 
-        // Add timestamp to the event
+        // Create timestamped event
         const timestampedEvent = {
-            ...eventData,
-            timestamp: new Date().toISOString(),
-            received_at: Date.now(),
-            normalized: normalized,
-            signature: signature
+            timestamp: nowIso,
+            event_type: type,
+            token_address: mint,
+            source,
+            signature: normalized.launchTx ? normalized.launchTx.substring(0, 8) + '...' : 'none',
+            is_helius: !!(req.body.events || req.body.signature)
         };
 
-        // Append to JSONL file (audit trail)
+        // Save to JSONL
         appendToJsonl(timestampedEvent);
 
-        // Extract data for SQLite
-        const nowIso = new Date().toISOString();
-        const mint = normalized.mint || req.body.mint || req.body.token_address || 'unknown';
-        const creator = normalized.creator || req.body.creator || null;
-        const decimals = normalized.decimals ?? (typeof req.body?.metadata?.decimals === 'number' ? req.body.metadata.decimals : null);
-
         // Save to SQLite - Token upsert
-        saveToken({
+        const tokenResult = saveToken({
             mint,
-            symbol: normalized.symbol || req.body?.metadata?.symbol || req.body.symbol || null,
-            name: normalized.name || req.body?.metadata?.name || req.body.name || null,
-            decimals,
-            creator,
-            launch_tx: normalized.launchTx || req.body.launchTx || signature,
-            source: normalized.source || req.body.source || 'unknown',
-            first_seen_at: normalized.createdAt || req.body.createdAt || nowIso,
+            symbol: normalized.symbol,
+            name: normalized.name,
+            decimals: normalized.decimals,
+            creator: normalized.creator,
+            launch_tx: normalized.launchTx,
+            source,
+            first_seen_at: normalized.createdAt || nowIso,
             last_updated_at: nowIso,
         });
 
         // Save to SQLite - Event insert with deduplication
         const eventResult = saveEvent({
             mint,
-            type: normalized.type || req.body.type || 'unknown',
-            source: normalized.source || req.body.source || 'unknown',
+            type,
+            source,
             received_at: nowIso,
             raw_json: JSON.stringify(req.body),
-            signature: signature
+            signature: normalized.launchTx || null
         });
 
-        console.log(`✅ New token event received and stored:`, {
-            timestamp: timestampedEvent.timestamp,
-            event_type: normalized.type || eventData.type || 'unknown',
-            token_address: mint,
-            source: normalized.source || req.body.source || 'unknown',
-            signature: signature ? `${signature.substring(0, 8)}...` : 'none',
-            is_helius: !!(req.body.events || req.body.signature),
-            stored: eventResult.changes > 0 ? 'yes' : 'duplicate'
+        const processingTime = Date.now() - startTime;
+        
+        log('info', 'event_stored', {
+            source,
+            mint: mint.substring(0, 8) + '...',
+            type,
+            stored: eventResult.changes > 0,
+            duplicate: eventResult.changes === 0,
+            processingTime
         });
 
         res.json({ 
@@ -169,11 +244,16 @@ app.post('/webhook', (req, res) => {
             stored: eventResult.changes > 0,
             duplicate: eventResult.changes === 0,
             timestamp: timestampedEvent.timestamp,
-            signature: signature
+            signature: normalized.launchTx
         });
 
     } catch (error) {
-        console.error('❌ Error processing webhook:', error);
+        const processingTime = Date.now() - startTime;
+        log('error', 'webhook_processing_failed', { 
+            error: error.message,
+            processingTime,
+            ip: req.ip
+        });
         res.status(500).json({ 
             ok: false, 
             error: 'Internal server error' 
@@ -183,38 +263,9 @@ app.post('/webhook', (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-    console.log(`🚀 Webhook server running on port ${PORT}`);
-    console.log(`📁 Data directory: ${DATA_DIR}`);
-    console.log(`📄 JSONL file: ${JSONL_FILE}`);
-    console.log(`🗄️  SQLite DB: db/agent.db`);
-    console.log(`🔐 Shared secret: ${SHARED_SECRET.substring(0, 8)}...`);
-    console.log(`\n📋 Available endpoints:`);
-    console.log(`   GET  /health - Health check`);
-    console.log(`   GET  /stats - Event statistics`);
-    console.log(`   POST /webhook - Receive token events (requires x-webhook-secret header)`);
-    console.log(`\n🔧 Test with curl:`);
-    console.log(`   curl -X GET http://localhost:${PORT}/health`);
-    console.log(`   curl -X GET http://localhost:${PORT}/stats`);
-    console.log(`   curl -X POST http://localhost:${PORT}/webhook \\`);
-    console.log(`     -H "Content-Type: application/json" \\`);
-    console.log(`     -H "x-webhook-secret: ${SHARED_SECRET}" \\`);
-    console.log(`     -d '{"type":"new_token","token_address":"ABC123","symbol":"TEST"}'`);
-    console.log(`\n🌐 To expose publicly, run: node start-tunnel.js`);
-    console.log(`\n⚠️  Make sure to set your environment variables:`);
-    console.log(`   export WEBHOOK_SECRET=your-secret-key-here`);
-    console.log(`   export HELIUS_API_KEY=your-helius-api-key`);
-    console.log(`\n🔍 Deduplication enabled:`);
-    console.log(`   - By (mint, type, received_at)`);
-    console.log(`   - By (signature, type)`);
-});
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-    console.log('\n🛑 Shutting down webhook server...');
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    console.log('\n🛑 Shutting down webhook server...');
-    process.exit(0);
+    log('info', 'server_started', { 
+        port: PORT,
+        dataDir: DATA_DIR,
+        jsonlFile: JSONL_FILE
+    });
 });
