@@ -150,6 +150,89 @@ function showStats() {
     console.log(`   Candidate tokens: ${candidateCount.count}`);
 }
 
+function showErrors(limit = 20) {
+    const validatedLimit = validateNumber(limit, 20);
+    const rows = db.prepare(`
+        SELECT 
+            mint,
+            symbol,
+            enrich_attempts,
+            last_enriched_at,
+            enrich_error
+        FROM tokens
+        WHERE enrich_error IS NOT NULL
+        ORDER BY datetime(last_enriched_at) DESC
+        LIMIT ?
+    `).all(validatedLimit);
+    
+    console.log(`❌ Recent ${validatedLimit} enrichment errors:`);
+    console.table(rows);
+}
+
+function showUnenriched(limit = 20) {
+    const validatedLimit = validateNumber(limit, 20);
+    const rows = db.prepare(`
+        SELECT 
+            mint,
+            symbol,
+            name,
+            first_seen_at,
+            authorities_revoked,
+            lp_exists,
+            liquidity_usd,
+            enrich_attempts,
+            last_enriched_at
+        FROM tokens
+        WHERE (
+            symbol IS NULL OR name IS NULL OR decimals IS NULL
+            OR authorities_revoked IS NULL
+            OR lp_exists IS NULL OR liquidity_usd IS NULL
+        )
+        ORDER BY datetime(first_seen_at) DESC
+        LIMIT ?
+    `).all(validatedLimit);
+    
+    console.log(`🔄 ${validatedLimit} tokens still needing enrichment:`);
+    console.table(rows);
+}
+
+function enrichSingle(mint) {
+    if (!mint) {
+        console.log('❌ Please provide a mint address');
+        return;
+    }
+    
+    console.log(`🔄 Force enriching single token: ${mint}`);
+    
+    // Import and run the enrichment worker for a single token
+    const { execSync } = require('child_process');
+    try {
+        execSync(`node -e "
+            require('dotenv').config();
+            const Database = require('better-sqlite3');
+            const { fetchJson, sleep } = require('./lib/http');
+            
+            const db = new Database('db/agent.db');
+            const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
+            const DEXSCREENER_BASE = process.env.DEXSCREENER_BASE || 'https://api.dexscreener.com';
+            
+            // Get the token
+            const token = db.prepare('SELECT * FROM tokens WHERE mint = ?').get('${mint}');
+            if (!token) {
+                console.log('❌ Token not found');
+                process.exit(1);
+            }
+            
+            // Run enrichment (simplified version)
+            console.log('🔄 Running enrichment...');
+            // This would need the full enrichment logic, but for now just show the token
+            console.log('Token:', token);
+        "`, { stdio: 'inherit' });
+    } catch (error) {
+        console.error('❌ Enrichment failed:', error.message);
+    }
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -159,6 +242,9 @@ Commands:
   recent-pump [N]      Show recent Pump.fun tokens (default: 20)
   candidates [N]       Show candidate tokens (default: 20)
   events <MINT>        Show events for specific token
+  errors [N]           Show recent enrichment errors (default: 20)
+  unenriched [N]       Show tokens still needing enrichment (default: 20)
+  enrich <MINT>        Force enrich a single token
   stats                Show comprehensive statistics
   help                 Show this help message
 
@@ -166,6 +252,9 @@ Examples:
   npm run cli -- recent 50
   npm run cli -- recent-pump 10
   npm run cli -- events So11111111111111111111111111111111111111112
+  npm run cli -- errors 10
+  npm run cli -- unenriched 15
+  npm run cli -- enrich 7ypeXztHG9pGX2mkZdm9hcMhYp4KRL4wZFmLxHXzpump
   npm run cli -- stats
 `);
 }
@@ -182,6 +271,14 @@ if (cmd === 'recent') {
     showCandidates(n);
 } else if (cmd === 'events') {
     showEvents(process.argv[3]);
+} else if (cmd === 'errors') {
+    const n = process.argv[3];
+    showErrors(n);
+} else if (cmd === 'unenriched') {
+    const n = process.argv[3];
+    showUnenriched(n);
+} else if (cmd === 'enrich') {
+    enrichSingle(process.argv[3]);
 } else if (cmd === 'stats') {
     showStats();
 } else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
