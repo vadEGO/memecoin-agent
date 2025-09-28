@@ -40,7 +40,30 @@ CREATE TABLE IF NOT EXISTS holders (
   owner TEXT,
   amount TEXT,
   last_seen_at TEXT,
+  wallet_age_days INTEGER,
+  is_inception INTEGER DEFAULT 0,
+  is_sniper INTEGER DEFAULT 0,
+  is_bundler INTEGER DEFAULT 0,
+  is_insider INTEGER DEFAULT 0,
+  first_seen_at TEXT,
   PRIMARY KEY (mint, owner)
+);
+
+CREATE TABLE IF NOT EXISTS holders_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mint TEXT,
+  snapshot_time TEXT,
+  holders_count INTEGER,
+  fresh_wallets_count INTEGER,
+  inception_count INTEGER,
+  sniper_count INTEGER,
+  bundler_count INTEGER,
+  insider_count INTEGER,
+  fresh_ratio REAL,
+  top10_share REAL,
+  sniper_ratio REAL,
+  health_score INTEGER,
+  UNIQUE(mint, snapshot_time)
 );
 
 -- Indexes for performance
@@ -61,6 +84,15 @@ ON holders (mint);
 
 CREATE INDEX IF NOT EXISTS idx_holders_owner
 ON holders (owner);
+
+CREATE INDEX IF NOT EXISTS idx_holders_wallet_type
+ON holders (mint, is_inception, is_sniper, is_bundler, is_insider);
+
+CREATE INDEX IF NOT EXISTS idx_holders_history_mint_time
+ON holders_history (mint, snapshot_time);
+
+CREATE INDEX IF NOT EXISTS idx_holders_history_health_score
+ON holders_history (health_score DESC);
 `);
 
 console.log('✅ DB schema ready at db/agent.db');

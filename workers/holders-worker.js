@@ -23,8 +23,8 @@ const pickTokensForHolders = db.prepare(`
 `);
 
 const upsertHolder = db.prepare(`
-  INSERT OR REPLACE INTO holders (mint, owner, amount, last_seen_at)
-  VALUES (?, ?, ?, ?)
+  INSERT OR REPLACE INTO holders (mint, owner, amount, last_seen_at, wallet_age_days, is_inception, is_sniper, is_bundler, is_insider, first_seen_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updateTokenCounts = db.prepare(`
@@ -38,6 +38,12 @@ const getTokenEvents = db.prepare(`
   FROM token_events
   WHERE mint = ? AND received_at >= ? AND received_at < ?
   ORDER BY received_at ASC
+`);
+
+const insertHistorySnapshot = db.prepare(`
+  INSERT OR REPLACE INTO holders_history 
+  (mint, snapshot_time, holders_count, fresh_wallets_count, inception_count, sniper_count, bundler_count, insider_count, fresh_ratio, top10_share, sniper_ratio, health_score)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 // --- Helius API Functions ---
@@ -63,6 +69,87 @@ async function fetchParsedTransactions(mint, startTime, endTime) {
   // TODO: Implement proper transaction fetching
   logger.warning('holders', mint, 'transactions', 'Transaction fetching not implemented yet');
   return [];
+}
+
+// --- Wallet Classification Functions ---
+function calculateWalletAge(firstSeenAt) {
+  if (!firstSeenAt) return null;
+  const firstSeen = new Date(firstSeenAt);
+  const now = new Date();
+  const diffTime = Math.abs(now - firstSeen);
+  return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); // days
+}
+
+function classifyWallet(owner, tokenAccounts, inceptionHolders, transactions, firstSeenAt) {
+  const walletAge = calculateWalletAge(firstSeenAt);
+  const isInception = inceptionHolders.has(owner);
+  
+  // Sniper: first 1-2 blocks post-launch
+  const isSniper = walletAge === 0 && !isInception;
+  
+  // Bundler: 1 wallet disperses to 10+ wallets right after buying
+  const isBundler = false; // TODO: Implement bundler detection logic
+  
+  // Insider: received SOL from same wallet as dev (simplified check)
+  const isInsider = false; // TODO: Implement insider detection logic
+  
+  return {
+    walletAge,
+    isInception: isInception ? 1 : 0,
+    isSniper: isSniper ? 1 : 0,
+    isBundler: isBundler ? 1 : 0,
+    isInsider: isInsider ? 1 : 0
+  };
+}
+
+function calculateRatios(holders) {
+  const totalHolders = holders.length;
+  if (totalHolders === 0) {
+    return { freshRatio: 0, top10Share: 0, sniperRatio: 0 };
+  }
+  
+  const freshCount = holders.filter(h => h.isInception === 0).length;
+  const sniperCount = holders.filter(h => h.isSniper === 1).length;
+  
+  // Top 10 share calculation
+  const sortedByAmount = holders
+    .map(h => parseFloat(h.amount) || 0)
+    .sort((a, b) => b - a);
+  const top10Amount = sortedByAmount.slice(0, 10).reduce((sum, amount) => sum + amount, 0);
+  const totalAmount = sortedByAmount.reduce((sum, amount) => sum + amount, 0);
+  const top10Share = totalAmount > 0 ? top10Amount / totalAmount : 0;
+  
+  return {
+    freshRatio: freshCount / totalHolders,
+    top10Share,
+    sniperRatio: sniperCount / totalHolders
+  };
+}
+
+function calculateHealthScore(ratios, holders) {
+  let score = 50; // Base score
+  
+  // Fresh ratio bonus (0-30 points)
+  if (ratios.freshRatio > 0.7) score += 30;
+  else if (ratios.freshRatio > 0.5) score += 20;
+  else if (ratios.freshRatio > 0.3) score += 10;
+  
+  // Top 10 share penalty (0-20 points)
+  if (ratios.top10Share > 0.8) score -= 20;
+  else if (ratios.top10Share > 0.6) score -= 10;
+  else if (ratios.top10Share < 0.3) score += 10;
+  
+  // Sniper ratio penalty (0-20 points)
+  if (ratios.sniperRatio > 0.5) score -= 20;
+  else if (ratios.sniperRatio > 0.3) score -= 10;
+  
+  // Holder count bonus (0-20 points)
+  if (holders.length > 1000) score += 20;
+  else if (holders.length > 500) score += 15;
+  else if (holders.length > 100) score += 10;
+  else if (holders.length > 50) score += 5;
+  
+  return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 // --- Analysis Functions ---
@@ -125,37 +212,90 @@ async function processTokenHolders(token) {
     // 1. Fetch current token accounts
     const tokenAccounts = await fetchTokenAccounts(mint);
     
-    // 2. Upsert all holders into database
-    for (const account of tokenAccounts) {
-      upsertHolder.run(mint, account.owner, account.amount, account.lastSeen);
-    }
-    
-    // 3. Calculate fresh window (30 minutes from first_seen_at)
+    // 2. Calculate fresh window (30 minutes from first_seen_at)
     const firstSeenTime = new Date(first_seen_at);
     const freshWindowEnd = new Date(firstSeenTime.getTime() + 30 * 60 * 1000); // +30 minutes
     
-    // 4. Fetch transactions in the fresh window
+    // 3. Fetch transactions in the fresh window
     const transactions = await fetchParsedTransactions(
       mint, 
       first_seen_at, 
       freshWindowEnd.toISOString()
     );
     
-    // 5. Extract inception holders and fresh buyers
+    // 4. Extract inception holders and classify wallets
     const inceptionHolders = extractInceptionHolders(transactions);
-    const freshBuyers = extractFreshBuyers(transactions, inceptionHolders);
     
-    // 6. Calculate counts
-    const holdersCount = tokenAccounts.length;
-    const freshWalletsCount = freshBuyers.size;
+    // 5. Upsert all holders with classification into database
+    const classifiedHolders = [];
+    for (const account of tokenAccounts) {
+      const classification = classifyWallet(
+        account.owner, 
+        tokenAccounts, 
+        inceptionHolders, 
+        transactions, 
+        account.lastSeen
+      );
+      
+      upsertHolder.run(
+        mint, 
+        account.owner, 
+        account.amount, 
+        account.lastSeen,
+        classification.walletAge,
+        classification.isInception,
+        classification.isSniper,
+        classification.isBundler,
+        classification.isInsider,
+        account.lastSeen
+      );
+      
+      classifiedHolders.push({
+        owner: account.owner,
+        amount: account.amount,
+        ...classification
+      });
+    }
     
-    // 7. Update token counts
+    // 6. Calculate ratios and health score
+    const ratios = calculateRatios(classifiedHolders);
+    const healthScore = calculateHealthScore(ratios, classifiedHolders);
+    
+    // 7. Calculate counts by type
+    const holdersCount = classifiedHolders.length;
+    const freshWalletsCount = classifiedHolders.filter(h => h.isInception === 0).length;
+    const inceptionCount = classifiedHolders.filter(h => h.isInception === 1).length;
+    const sniperCount = classifiedHolders.filter(h => h.isSniper === 1).length;
+    const bundlerCount = classifiedHolders.filter(h => h.isBundler === 1).length;
+    const insiderCount = classifiedHolders.filter(h => h.isInsider === 1).length;
+    
+    // 8. Update token counts
     updateTokenCounts.run(holdersCount, freshWalletsCount, now, mint);
+    
+    // 9. Create history snapshot
+    insertHistorySnapshot.run(
+      mint,
+      now,
+      holdersCount,
+      freshWalletsCount,
+      inceptionCount,
+      sniperCount,
+      bundlerCount,
+      insiderCount,
+      ratios.freshRatio,
+      ratios.top10Share,
+      ratios.sniperRatio,
+      healthScore
+    );
     
     logger.success('holders', mint, 'complete', `Holders processed successfully`, {
       holders: holdersCount,
       fresh: freshWalletsCount,
-      inception: inceptionHolders.size
+      inception: inceptionCount,
+      sniper: sniperCount,
+      healthScore: healthScore,
+      freshRatio: ratios.freshRatio.toFixed(3),
+      top10Share: ratios.top10Share.toFixed(3)
     });
     
   } catch (error) {

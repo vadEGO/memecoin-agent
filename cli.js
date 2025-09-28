@@ -265,9 +265,9 @@ function showHolders(mint, limit = 20) {
         return;
     }
     
-    // Get holders
+    // Get holders with classifications
     const holders = db.prepare(`
-        SELECT owner, amount, last_seen_at
+        SELECT owner, amount, last_seen_at, wallet_age_days, is_inception, is_sniper, is_bundler, is_insider
         FROM holders
         WHERE mint = ?
         ORDER BY CAST(amount AS INTEGER) DESC
@@ -289,14 +289,132 @@ function showHolders(mint, limit = 20) {
     console.log('');
     
     // Format holders data for display
-    const formattedHolders = holders.map((holder, index) => ({
-        '#': index + 1,
-        'Owner': holder.owner.substring(0, 8) + '...' + holder.owner.substring(holder.owner.length - 8),
-        'Amount': holder.amount,
-        'Last Seen': holder.last_seen_at ? new Date(holder.last_seen_at).toLocaleString() : 'Unknown'
-    }));
+    const formattedHolders = holders.map((holder, index) => {
+        const types = [];
+        if (holder.is_inception) types.push('Inception');
+        if (holder.is_sniper) types.push('Sniper');
+        if (holder.is_bundler) types.push('Bundler');
+        if (holder.is_insider) types.push('Insider');
+        if (types.length === 0) types.push('Fresh');
+        
+        return {
+            '#': index + 1,
+            'Owner': holder.owner.substring(0, 8) + '...' + holder.owner.substring(holder.owner.length - 8),
+            'Amount': holder.amount,
+            'Type': types.join(', '),
+            'Age': holder.wallet_age_days ? `${holder.wallet_age_days}d` : 'Unknown',
+            'Last Seen': holder.last_seen_at ? new Date(holder.last_seen_at).toLocaleString() : 'Unknown'
+        };
+    });
     
     console.table(formattedHolders);
+}
+
+function showMomentum(mint, limit = 20) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js momentum <MINT> [LIMIT]');
+        console.log('   Example: node cli.js momentum So11111111111111111111111111111111111111112 10');
+        process.exit(1);
+    }
+    
+    const validatedLimit = validateNumber(limit, 20);
+    
+    // Get token info
+    const token = db.prepare('SELECT mint, symbol, name FROM tokens WHERE mint = ?').get(mint);
+    if (!token) {
+        console.log(`❌ Token not found: ${mint}`);
+        return;
+    }
+    
+    // Get history snapshots
+    const history = db.prepare(`
+        SELECT snapshot_time, holders_count, fresh_wallets_count, health_score, fresh_ratio, top10_share, sniper_ratio
+        FROM holders_history
+        WHERE mint = ?
+        ORDER BY datetime(snapshot_time) DESC
+        LIMIT ?
+    `).all(mint, validatedLimit);
+    
+    if (history.length === 0) {
+        console.log(`🔍 No momentum data found for ${mint}`);
+        console.log(`   Token: ${token.symbol || 'Unknown'} (${token.name || 'Unknown'})`);
+        return;
+    }
+    
+    console.log(`📈 Holder Growth Momentum for ${mint.substring(0, 8)}...`);
+    console.log(`   Token: ${token.symbol || 'Unknown'} (${token.name || 'Unknown'})`);
+    console.log('');
+    
+    // Format momentum data
+    const formattedHistory = history.map((snapshot, index) => ({
+        '#': index + 1,
+        'Time': new Date(snapshot.snapshot_time).toLocaleString(),
+        'Holders': snapshot.holders_count,
+        'Fresh': snapshot.fresh_wallets_count,
+        'Health': snapshot.health_score,
+        'Fresh%': (snapshot.fresh_ratio * 100).toFixed(1) + '%',
+        'Top10%': (snapshot.top10_share * 100).toFixed(1) + '%',
+        'Sniper%': (snapshot.sniper_ratio * 100).toFixed(1) + '%'
+    }));
+    
+    console.table(formattedHistory);
+}
+
+function showScore(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js score <MINT>');
+        console.log('   Example: node cli.js score So11111111111111111111111111111111111111112');
+        process.exit(1);
+    }
+    
+    // Get latest health score
+    const latest = db.prepare(`
+        SELECT h.*, t.symbol, t.name
+        FROM holders_history h
+        JOIN tokens t ON h.mint = t.mint
+        WHERE h.mint = ?
+        ORDER BY datetime(h.snapshot_time) DESC
+        LIMIT 1
+    `).get(mint);
+    
+    if (!latest) {
+        console.log(`❌ No score data found for ${mint}`);
+        return;
+    }
+    
+    // Get wallet type breakdown
+    const walletTypes = db.prepare(`
+        SELECT 
+            SUM(is_inception) as inception_count,
+            SUM(is_sniper) as sniper_count,
+            SUM(is_bundler) as bundler_count,
+            SUM(is_insider) as insider_count,
+            COUNT(*) as total_holders
+        FROM holders
+        WHERE mint = ?
+    `).get(mint);
+    
+    const score = latest.health_score;
+    const scoreEmoji = score >= 80 ? '🟢' : score >= 60 ? '🟡' : score >= 40 ? '🟠' : '🔴';
+    const scoreText = score >= 80 ? 'Excellent' : score >= 60 ? 'Good' : score >= 40 ? 'Fair' : 'Poor';
+    
+    console.log(`🎯 Health Score for ${mint.substring(0, 8)}...`);
+    console.log(`   Token: ${latest.symbol || 'Unknown'} (${latest.name || 'Unknown'})`);
+    console.log('');
+    console.log(`${scoreEmoji} Overall Score: ${score}/100 (${scoreText})`);
+    console.log('');
+    console.log('📊 Key Metrics:');
+    console.log(`   Fresh Ratio: ${(latest.fresh_ratio * 100).toFixed(1)}%`);
+    console.log(`   Top 10 Share: ${(latest.top10_share * 100).toFixed(1)}%`);
+    console.log(`   Sniper Ratio: ${(latest.sniper_ratio * 100).toFixed(1)}%`);
+    console.log(`   Total Holders: ${latest.holders_count}`);
+    console.log('');
+    console.log('👥 Wallet Breakdown:');
+    console.log(`   Inception: ${walletTypes.inception_count || 0}`);
+    console.log(`   Sniper: ${walletTypes.sniper_count || 0}`);
+    console.log(`   Bundler: ${walletTypes.bundler_count || 0}`);
+    console.log(`   Insider: ${walletTypes.insider_count || 0}`);
+    console.log(`   Fresh: ${(walletTypes.total_holders || 0) - (walletTypes.inception_count || 0)}`);
 }
 
 function showHelp() {
@@ -309,6 +427,8 @@ Commands:
   candidates [N]       Show candidate tokens (default: 20)
   events <MINT>        Show events for specific token
   holders <MINT> [N]   Show top holders for specific token (default: 20)
+  momentum <MINT> [N]  Show holder growth momentum over time (default: 20)
+  score <MINT>         Show health score and wallet analysis
   errors [N]           Show recent enrichment errors (default: 20)
   unenriched [N]       Show tokens still needing enrichment (default: 20)
   enrich <MINT>        Force enrich a single token
@@ -320,6 +440,8 @@ Examples:
   npm run cli -- recent-pump 10
   npm run cli -- events So11111111111111111111111111111111111111112
   npm run cli -- holders So11111111111111111111111111111111111111112 10
+  npm run cli -- momentum So11111111111111111111111111111111111111112 10
+  npm run cli -- score So11111111111111111111111111111111111111112
   npm run cli -- errors 10
   npm run cli -- unenriched 15
   npm run cli -- enrich 7ypeXztHG9pGX2mkZdm9hcMhYp4KRL4wZFmLxHXzpump
@@ -343,6 +465,13 @@ if (cmd === 'recent') {
     const mint = process.argv[3];
     const limit = process.argv[4];
     showHolders(mint, limit);
+} else if (cmd === 'momentum') {
+    const mint = process.argv[3];
+    const limit = process.argv[4];
+    showMomentum(mint, limit);
+} else if (cmd === 'score') {
+    const mint = process.argv[3];
+    showScore(mint);
 } else if (cmd === 'errors') {
     const n = process.argv[3];
     showErrors(n);
