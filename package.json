@@ -12,7 +12,8 @@
     "db:init": "node db/init.js",
     "test": "node test-webhook.js",
     "vet": "node workers/vetting-worker.js",
-    "enrich": "node enrich/worker.js"
+    "enrich": "node enrich/worker.js",
+    "holders": "node workers/holders-worker.js"
   },
   "keywords": [
     "solana",

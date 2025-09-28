@@ -35,6 +35,14 @@ CREATE TABLE IF NOT EXISTS token_events (
   UNIQUE(signature, type)
 );
 
+CREATE TABLE IF NOT EXISTS holders (
+  mint TEXT,
+  owner TEXT,
+  amount TEXT,
+  last_seen_at TEXT,
+  PRIMARY KEY (mint, owner)
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_token_events_mint_time
 ON token_events (mint, received_at);
@@ -47,6 +55,12 @@ ON token_events (type);
 
 CREATE INDEX IF NOT EXISTS idx_token_events_source
 ON token_events (source);
+
+CREATE INDEX IF NOT EXISTS idx_holders_mint
+ON holders (mint);
+
+CREATE INDEX IF NOT EXISTS idx_holders_owner
+ON holders (owner);
 `);
 
 console.log('✅ DB schema ready at db/agent.db');

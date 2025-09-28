@@ -134,6 +134,16 @@ function showStats() {
     
     const candidateCount = db.prepare(`SELECT COUNT(*) as count FROM v_tokens_candidates`).get();
     
+    const holdersStats = db.prepare(`
+        SELECT 
+            COUNT(*) as total_tokens,
+            COUNT(holders_count) as tokens_with_holders,
+            COUNT(fresh_wallets_count) as tokens_with_fresh,
+            AVG(holders_count) as avg_holders,
+            AVG(fresh_wallets_count) as avg_fresh
+        FROM tokens
+    `).get();
+    
     console.log('\n📊 System Statistics:');
     console.log(`   Total Tokens: ${totals.tokens}`);
     console.table(bySource);
@@ -148,6 +158,12 @@ function showStats() {
     console.log(`   Authorities revoked: ${vettingStats.auth_revoked_count}`);
     console.log(`   LP exists: ${vettingStats.lp_exists_count}`);
     console.log(`   Candidate tokens: ${candidateCount.count}`);
+    
+    console.log('\n👥 Holders Status:');
+    console.log(`   Tokens with holders: ${holdersStats.tokens_with_holders}/${holdersStats.total_tokens}`);
+    console.log(`   Tokens with fresh wallets: ${holdersStats.tokens_with_fresh}/${holdersStats.total_tokens}`);
+    console.log(`   Average holders: ${holdersStats.avg_holders ? holdersStats.avg_holders.toFixed(2) : 'N/A'}`);
+    console.log(`   Average fresh wallets: ${holdersStats.avg_fresh ? holdersStats.avg_fresh.toFixed(2) : 'N/A'}`);
 }
 
 function showErrors(limit = 20) {
@@ -233,6 +249,56 @@ function enrichSingle(mint) {
     }
 }
 
+function showHolders(mint, limit = 20) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js holders <MINT> [LIMIT]');
+        console.log('   Example: node cli.js holders So11111111111111111111111111111111111111112 10');
+        process.exit(1);
+    }
+    
+    const validatedLimit = validateNumber(limit, 20);
+    
+    // First check if token exists
+    const token = db.prepare('SELECT mint, symbol, name, holders_count, fresh_wallets_count FROM tokens WHERE mint = ?').get(mint);
+    if (!token) {
+        console.log(`❌ Token not found: ${mint}`);
+        return;
+    }
+    
+    // Get holders
+    const holders = db.prepare(`
+        SELECT owner, amount, last_seen_at
+        FROM holders
+        WHERE mint = ?
+        ORDER BY CAST(amount AS INTEGER) DESC
+        LIMIT ?
+    `).all(mint, validatedLimit);
+    
+    if (holders.length === 0) {
+        console.log(`🔍 No holders found for ${mint}`);
+        console.log(`   Token: ${token.symbol || 'Unknown'} (${token.name || 'Unknown'})`);
+        console.log(`   Holders count: ${token.holders_count !== null ? token.holders_count : 'Not processed'}`);
+        console.log(`   Fresh wallets: ${token.fresh_wallets_count !== null ? token.fresh_wallets_count : 'Not processed'}`);
+        return;
+    }
+    
+    console.log(`👥 Top ${validatedLimit} holders for ${mint.substring(0, 8)}...`);
+    console.log(`   Token: ${token.symbol || 'Unknown'} (${token.name || 'Unknown'})`);
+    console.log(`   Total holders: ${token.holders_count !== null ? token.holders_count : 'Not processed'}`);
+    console.log(`   Fresh wallets: ${token.fresh_wallets_count !== null ? token.fresh_wallets_count : 'Not processed'}`);
+    console.log('');
+    
+    // Format holders data for display
+    const formattedHolders = holders.map((holder, index) => ({
+        '#': index + 1,
+        'Owner': holder.owner.substring(0, 8) + '...' + holder.owner.substring(holder.owner.length - 8),
+        'Amount': holder.amount,
+        'Last Seen': holder.last_seen_at ? new Date(holder.last_seen_at).toLocaleString() : 'Unknown'
+    }));
+    
+    console.table(formattedHolders);
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -242,6 +308,7 @@ Commands:
   recent-pump [N]      Show recent Pump.fun tokens (default: 20)
   candidates [N]       Show candidate tokens (default: 20)
   events <MINT>        Show events for specific token
+  holders <MINT> [N]   Show top holders for specific token (default: 20)
   errors [N]           Show recent enrichment errors (default: 20)
   unenriched [N]       Show tokens still needing enrichment (default: 20)
   enrich <MINT>        Force enrich a single token
@@ -252,6 +319,7 @@ Examples:
   npm run cli -- recent 50
   npm run cli -- recent-pump 10
   npm run cli -- events So11111111111111111111111111111111111111112
+  npm run cli -- holders So11111111111111111111111111111111111111112 10
   npm run cli -- errors 10
   npm run cli -- unenriched 15
   npm run cli -- enrich 7ypeXztHG9pGX2mkZdm9hcMhYp4KRL4wZFmLxHXzpump
@@ -271,6 +339,10 @@ if (cmd === 'recent') {
     showCandidates(n);
 } else if (cmd === 'events') {
     showEvents(process.argv[3]);
+} else if (cmd === 'holders') {
+    const mint = process.argv[3];
+    const limit = process.argv[4];
+    showHolders(mint, limit);
 } else if (cmd === 'errors') {
     const n = process.argv[3];
     showErrors(n);
