@@ -43,7 +43,7 @@ const updateHolderType = db.prepare(`
 
 const updateTokenSniperCount = db.prepare(`
   UPDATE tokens
-  SET sniper_count = ?
+  SET sniper_count = ?, sniper_pct = ?
   WHERE mint = ?
 `);
 
@@ -118,14 +118,14 @@ function extractBuyersFromTransaction(tx, mint) {
   return buyers;
 }
 
-function findSniperTransactions(transactions, poolSlot, sniperWindowEnd) {
+function findSniperTransactions(transactions, poolBlock, sniperWindowEnd) {
   const sniperBuyers = new Set();
   
   for (const tx of transactions) {
     if (!tx?.slot || !tx?.blockTime) continue;
     
-    // Check if transaction is within sniper window (pool slot + N blocks)
-    if (tx.slot >= poolSlot && tx.slot <= sniperWindowEnd) {
+    // Check if transaction is within sniper window (pool block + N blocks)
+    if (tx.slot >= poolBlock && tx.slot <= sniperWindowEnd) {
       // This transaction is in the sniper window
       const buyers = extractBuyersFromTransaction(tx, tx.mint);
       buyers.forEach(buyer => sniperBuyers.add(buyer));
@@ -142,23 +142,22 @@ async function processTokenSniperDetection(token) {
   logger.info('sniper-detector', mint, 'start', `Processing sniper detection for ${symbol} (${mint})`);
   
   try {
-    // 1. Get pool creation slot from database
+    // 1. Get pool creation block from database
     const poolInfo = db.prepare(`
-      SELECT pool_created_at, pool_signature, slot
+      SELECT pool_created_at, pool_signature, pool_block
       FROM tokens 
       WHERE mint = ? AND pool_signature IS NOT NULL
     `).get(mint);
     
-    if (!poolInfo || !poolInfo.slot) {
-      logger.warning('sniper-detector', mint, 'no_pool_slot', 'No pool slot found, skipping sniper detection');
+    if (!poolInfo || !poolInfo.pool_block) {
+      logger.warning('sniper-detector', mint, 'no_pool_block', 'No pool block found, skipping sniper detection');
       return;
     }
     
-    const poolSlot = poolInfo.slot;
+    const poolBlock = poolInfo.pool_block;
     
-    // 2. Calculate sniper window (pool slot + N blocks)
-    // Note: In Solana, slots are roughly equivalent to blocks
-    const sniperWindowEnd = poolSlot + N_BLOCKS;
+    // 2. Calculate sniper window (pool block + N blocks)
+    const sniperWindowEnd = poolBlock + N_BLOCKS;
     
     // 3. Calculate time window for fetching transactions (wider window to ensure we catch all)
     const poolTime = new Date(pool_created_at);
@@ -174,7 +173,7 @@ async function processTokenSniperDetection(token) {
     }
     
     // 5. Find sniper buyers using block-based detection
-    const sniperBuyers = findSniperTransactions(transactions, poolSlot, sniperWindowEnd);
+    const sniperBuyers = findSniperTransactions(transactions, poolBlock, sniperWindowEnd);
     
     if (sniperBuyers.size === 0) {
       logger.info('sniper-detector', mint, 'no_snipers', 'No snipers detected');
@@ -192,13 +191,17 @@ async function processTokenSniperDetection(token) {
       }
     }
     
-    // 7. Update token sniper count
-    updateTokenSniperCount.run(sniperBuyers.size, mint);
+    // 7. Update token sniper count and percentage
+    const token = db.prepare(`SELECT holders_count FROM tokens WHERE mint = ?`).get(mint);
+    const holdersCount = token?.holders_count || 0;
+    const sniperPct = holdersCount > 0 ? (sniperBuyers.size / holdersCount) * 100 : 0;
+    
+    updateTokenSniperCount.run(sniperBuyers.size, sniperPct, mint);
     
     logger.success('sniper-detector', mint, 'complete', `Sniper detection completed`, {
       snipers: sniperBuyers.size,
       updated: updatedCount,
-      poolSlot: poolSlot,
+      poolBlock: poolBlock,
       sniperWindowEnd: sniperWindowEnd
     });
     

@@ -52,7 +52,7 @@ const updateHolderType = db.prepare(`
 
 const updateTokenInsiderCount = db.prepare(`
   UPDATE tokens
-  SET insider_count = ?
+  SET insider_count = ?, insider_pct = ?
   WHERE mint = ?
 `);
 
@@ -193,8 +193,12 @@ async function processTokenInsiderDetection(token) {
       }
     }
     
-    // 6. Update token insider count
-    updateTokenInsiderCount.run(insiders.length, mint);
+    // 6. Update token insider count and percentage
+    const token = db.prepare(`SELECT holders_count FROM tokens WHERE mint = ?`).get(mint);
+    const holdersCount = token?.holders_count || 0;
+    const insiderPct = holdersCount > 0 ? (insiders.length / holdersCount) * 100 : 0;
+    
+    updateTokenInsiderCount.run(insiders.length, insiderPct, mint);
     
     logger.success('insider-detector', mint, 'complete', `Insider detection completed`, {
       insiders: insiders.length,

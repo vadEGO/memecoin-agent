@@ -49,7 +49,7 @@ const updateHolderType = db.prepare(`
 
 const updateTokenBundlerCount = db.prepare(`
   UPDATE tokens
-  SET bundler_count = ?
+  SET bundler_count = ?, bundler_pct = ?
   WHERE mint = ?
 `);
 
@@ -248,8 +248,12 @@ async function processTokenBundlerDetection(token) {
       }
     }
     
-    // 7. Update token bundler count
-    updateTokenBundlerCount.run(bundledCount, mint);
+    // 7. Update token bundler count and percentage
+    const token = db.prepare(`SELECT holders_count FROM tokens WHERE mint = ?`).get(mint);
+    const holdersCount = token?.holders_count || 0;
+    const bundlerPct = holdersCount > 0 ? (bundledCount / holdersCount) * 100 : 0;
+    
+    updateTokenBundlerCount.run(bundledCount, bundlerPct, mint);
     
     logger.success('bundler-detector', mint, 'complete', `Bundler detection completed`, {
       bundlers: bundlerCount,

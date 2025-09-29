@@ -22,7 +22,7 @@ const pickTokensForPoolDetection = db.prepare(`
 
 const updateTokenPoolInfo = db.prepare(`
   UPDATE tokens
-  SET pool_created_at = ?, pool_signature = ?, dev_wallet = ?, slot = ?
+  SET pool_created_at = ?, pool_signature = ?, pool_block = ?, dev_wallet = ?
   WHERE mint = ?
 `);
 
@@ -180,8 +180,8 @@ async function processTokenPoolDetection(token) {
     updateTokenPoolInfo.run(
       poolInfo.timestamp,
       poolInfo.signature,
+      poolInfo.slot, // pool_block
       devWallet,
-      poolInfo.slot,
       mint
     );
     
