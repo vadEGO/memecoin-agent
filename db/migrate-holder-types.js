@@ -146,3 +146,4 @@ console.log('   - v_token_scores view for dashboard queries');
 console.log('   - v_momentum_curves view for growth analysis');
 console.log('   - Computed percentages and health grades');
 console.log('   - Performance indexes for fast queries');
+

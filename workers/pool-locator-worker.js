@@ -22,7 +22,7 @@ const pickTokensForPoolDetection = db.prepare(`
 
 const updateTokenPoolInfo = db.prepare(`
   UPDATE tokens
-  SET pool_created_at = ?, pool_signature = ?, dev_wallet = ?
+  SET pool_created_at = ?, pool_signature = ?, dev_wallet = ?, slot = ?
   WHERE mint = ?
 `);
 
@@ -64,18 +64,24 @@ async function fetchTransactionDetails(signature) {
 
 // --- Pool Detection Functions ---
 function findPoolCreationTransaction(transactions, mint) {
+  let earliestPool = null;
+  
   // Look for DEX pool creation patterns
   for (const tx of transactions) {
-    if (!tx?.transaction?.message?.instructions) continue;
+    if (!tx?.transaction?.message?.instructions || !tx.blockTime) continue;
     
     for (const instruction of tx.transaction.message.instructions) {
-      // Raydium pool creation
+      let poolInfo = null;
+      
+      // Raydium pool creation (AMM v4)
       if (instruction?.program === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
         const parsed = instruction?.parsed;
         if (parsed?.type === 'initialize' && parsed?.info?.mintA === mint) {
-          return {
+          poolInfo = {
             signature: tx.transaction.signatures[0],
             timestamp: new Date(tx.blockTime * 1000).toISOString(),
+            blockTime: tx.blockTime,
+            slot: tx.slot,
             type: 'raydium'
           };
         }
@@ -85,9 +91,11 @@ function findPoolCreationTransaction(transactions, mint) {
       if (instruction?.program === 'Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB') {
         const parsed = instruction?.parsed;
         if (parsed?.type === 'initialize' && parsed?.info?.mintA === mint) {
-          return {
+          poolInfo = {
             signature: tx.transaction.signatures[0],
             timestamp: new Date(tx.blockTime * 1000).toISOString(),
+            blockTime: tx.blockTime,
+            slot: tx.slot,
             type: 'meteora'
           };
         }
@@ -97,17 +105,24 @@ function findPoolCreationTransaction(transactions, mint) {
       if (instruction?.program === '9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP') {
         const parsed = instruction?.parsed;
         if (parsed?.type === 'initialize' && parsed?.info?.mintA === mint) {
-          return {
+          poolInfo = {
             signature: tx.transaction.signatures[0],
             timestamp: new Date(tx.blockTime * 1000).toISOString(),
+            blockTime: tx.blockTime,
+            slot: tx.slot,
             type: 'orca'
           };
         }
       }
+      
+      // Check if this is the earliest pool creation
+      if (poolInfo && (!earliestPool || poolInfo.blockTime < earliestPool.blockTime)) {
+        earliestPool = poolInfo;
+      }
     }
   }
   
-  return null;
+  return earliestPool;
 }
 
 function findDevWallet(transactions, mint) {
@@ -166,6 +181,7 @@ async function processTokenPoolDetection(token) {
       poolInfo.timestamp,
       poolInfo.signature,
       devWallet,
+      poolInfo.slot,
       mint
     );
     

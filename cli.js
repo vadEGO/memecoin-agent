@@ -662,6 +662,7 @@ Commands:
   profiling-bundler    Run bundler detector worker
   profiling-insider    Run insider detector worker
   profiling-health     Run health score calculator
+  profiling-history    Run history snapshot worker
   
   help                 Show this help message
 
@@ -767,6 +768,12 @@ if (cmd === 'recent') {
     const { mainLoop } = require('./workers/health-score-worker');
     mainLoop().then(() => process.exit(0)).catch(error => {
         console.error('❌ Health score calculator failed:', error.message);
+        process.exit(1);
+    });
+} else if (cmd === 'profiling-history') {
+    const { mainLoop } = require('./workers/history-snapshot-worker');
+    mainLoop().then(() => process.exit(0)).catch(error => {
+        console.error('❌ History snapshot failed:', error.message);
         process.exit(1);
     });
 } else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {

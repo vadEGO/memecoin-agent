@@ -17,6 +17,7 @@ const sniperDetector = require('./sniper-detector-worker');
 const bundlerDetector = require('./bundler-detector-worker');
 const insiderDetector = require('./insider-detector-worker');
 const healthScoreCalculator = require('./health-score-worker');
+const historySnapshot = require('./history-snapshot-worker');
 
 const db = new Database('db/agent.db');
 db.pragma('journal_mode = WAL');
@@ -65,8 +66,12 @@ async function processWalletProfiling() {
     logger.info('wallet-profiling', null, 'step5', 'Calculating health scores...');
     await healthScoreCalculator.mainLoop();
     
-    // Step 6: Generate Summary Report
-    logger.info('wallet-profiling', null, 'step6', 'Generating summary report...');
+    // Step 6: History Snapshots
+    logger.info('wallet-profiling', null, 'step6', 'Creating history snapshots...');
+    await historySnapshot.mainLoop();
+    
+    // Step 7: Generate Summary Report
+    logger.info('wallet-profiling', null, 'step7', 'Generating summary report...');
     await generateSummaryReport();
     
     logger.success('wallet-profiling', null, 'complete', 'Wallet profiling pipeline completed successfully');
