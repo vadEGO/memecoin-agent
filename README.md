@@ -65,6 +65,38 @@ cp .env.example .env
 | `stats` | Show comprehensive statistics | `npm run cli -- stats` |
 | `help` | Show help message | `npm run cli -- help` |
 
+### 🔍 Wallet Profiling Commands (Task 8)
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `profiling` | Show wallet profiling dashboard | `npm run cli -- profiling` |
+| `profiling-detail <MINT>` | Show detailed wallet analysis | `npm run cli -- profiling-detail So111...` |
+| `classes <MINT>` | Show wallet class breakdown | `npm run cli -- classes So111...` |
+| `candidates [N]` | Show quality-ranked candidates | `npm run cli -- candidates 10` |
+| `discord-alert <MINT>` | Generate Discord/Telegram alert | `npm run cli -- discord-alert So111...` |
+
+## 🎯 Mint-First Invariant
+
+**Every display must show `SYMBOL (MINT)` format with copy functionality. Symbol-only displays are disallowed.**
+
+### ✅ Correct Patterns
+- `TEST (Test…7890)` - SYMBOL (MINT) format
+- `🚀 TEST (Test…7890)` - With emoji prefix
+- `Copy mint: \`TestMint1234567890123456789012345678901234567890\`` - Copy functionality
+
+### ❌ Disallowed Patterns
+- `TEST` - Symbol only
+- `TestMint1234567890123456789012345678901234567890` - Mint only
+- `TEST - TestMint1234567890123456789012345678901234567890` - Dash separator
+
+### 🔗 Explorer Links
+All explorer links are generated from mint address:
+- **Dexscreener**: `https://dexscreener.com/solana/<MINT>`
+- **Birdeye**: `https://birdeye.so/token/<MINT>?chain=solana`
+- **Solscan**: `https://solscan.io/token/<MINT>`
+
+See [MINT_FIRST_INVARIANT.md](MINT_FIRST_INVARIANT.md) for complete details.
+
 ## 🏗️ Architecture
 
 ```

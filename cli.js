@@ -67,18 +67,45 @@ function showCandidates(limit = 20) {
             first_seen_at,
             authorities_revoked, 
             lp_exists, 
-            liquidity_usd
-        FROM v_tokens_candidates
-        ORDER BY datetime(first_seen_at) DESC
+            liquidity_usd,
+            holders_count,
+            fresh_pct,
+            snipers_pct,
+            insiders_pct,
+            top10_share,
+            health_score
+        FROM tokens
+        WHERE authorities_revoked = 1 
+            AND lp_exists = 1 
+            AND liquidity_usd >= 5000
+            AND top10_share <= 0.6
+            AND fresh_pct IS NOT NULL
+            AND snipers_pct IS NOT NULL
+            AND insiders_pct IS NOT NULL
+        ORDER BY fresh_pct DESC, health_score DESC, liquidity_usd DESC
         LIMIT ?
     `).all(validatedLimit);
     
     if (rows.length === 0) {
-        console.log('🔍 No candidate tokens found (need authorities_revoked=1 AND liquidity_usd >= threshold)');
+        console.log('🔍 No candidate tokens found (need authorities_revoked=1 AND liquidity_usd >= $5k AND top10_share <= 60%)');
         console.log('   Try lowering the threshold or check if any tokens meet criteria');
     } else {
-        console.log(`🎯 Candidate tokens (authorities revoked + liquidity >= threshold):`);
-        console.table(rows);
+        console.log(`🎯 Candidate tokens (ranked by Fresh% high, Insider% low, Sniper% low):`);
+        
+        // Format the rows for display
+        const formattedRows = rows.map((row, index) => ({
+            '#': index + 1,
+            'Token': `${row.symbol || 'Unknown'} (${row.mint.slice(0, 4)}…${row.mint.slice(-4)})`,
+            'Fresh%': row.fresh_pct ? row.fresh_pct.toFixed(1) + '%' : 'N/A',
+            'Snipers%': row.snipers_pct ? row.snipers_pct.toFixed(1) + '%' : 'N/A',
+            'Insiders%': row.insiders_pct ? row.insiders_pct.toFixed(1) + '%' : 'N/A',
+            'Top10%': row.top10_share ? (row.top10_share * 100).toFixed(1) + '%' : 'N/A',
+            'Health': row.health_score ? row.health_score.toFixed(1) : 'N/A',
+            'Liq': row.liquidity_usd ? `$${(row.liquidity_usd / 1000).toFixed(1)}k` : '$0',
+            'Holders': row.holders_count || 0
+        }));
+        
+        console.table(formattedRows);
     }
 }
 
@@ -560,6 +587,50 @@ function showDiscordAlert(mint) {
     console.log(alert);
 }
 
+function showWalletClasses(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js classes <MINT>');
+        console.log('   Example: node cli.js classes So11111111111111111111111111111111111111112');
+        process.exit(1);
+    }
+    
+    // Get token info
+    const token = db.prepare('SELECT mint, symbol, fresh_count, fresh_pct, inception_count, inception_pct, snipers_count, snipers_pct, bundled_count, bundled_pct, insiders_count, insiders_pct, others_count, others_pct FROM tokens WHERE mint = ?').get(mint);
+    
+    if (!token) {
+        console.log(`❌ Token not found: ${mint}`);
+        return;
+    }
+    
+    const { formatWalletClass } = require('./lib/visual-encoding');
+    
+    console.log(`📊 Wallet Classes for ${token.symbol || 'Unknown'} (${mint.slice(0, 4)}…${mint.slice(-4)})`);
+    console.log('─'.repeat(60));
+    
+    // Format each class with count and percentage
+    const classes = [
+        { name: 'fresh', count: token.fresh_count || 0, pct: token.fresh_pct || 0 },
+        { name: 'inception', count: token.inception_count || 0, pct: token.inception_pct || 0 },
+        { name: 'snipers', count: token.snipers_count || 0, pct: token.snipers_pct || 0 },
+        { name: 'bundled', count: token.bundled_count || 0, pct: token.bundled_pct || 0 },
+        { name: 'insiders', count: token.insiders_count || 0, pct: token.insiders_pct || 0 },
+        { name: 'others', count: token.others_count || 0, pct: token.others_pct || 0 }
+    ];
+    
+    const formattedClasses = classes
+        .filter(cls => cls.count > 0)
+        .map(cls => formatWalletClass(cls.name, cls.count, cls.pct, true))
+        .join(' • ');
+    
+    if (formattedClasses) {
+        console.log(formattedClasses);
+    } else {
+        console.log('No wallet class data available');
+    }
+    
+    console.log(`\nCopy mint: \`${mint}\``);
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -584,6 +655,8 @@ Commands:
   profiling-detail <MINT>  Show detailed wallet analysis for token
   profiling-run        Run full wallet profiling pipeline
   discord-alert <MINT> Generate Discord/Telegram alert for token
+  classes <MINT>       Show wallet class breakdown for token
+  candidates [N]       Show candidate tokens ranked by quality
   profiling-pool       Run pool locator worker
   profiling-sniper     Run sniper detector worker
   profiling-bundler    Run bundler detector worker
@@ -661,6 +734,11 @@ if (cmd === 'recent') {
     runWalletProfiling();
 } else if (cmd === 'discord-alert') {
     showDiscordAlert(process.argv[3]);
+} else if (cmd === 'classes') {
+    showWalletClasses(process.argv[3]);
+} else if (cmd === 'candidates') {
+    const limit = process.argv[3];
+    showCandidates(limit);
 } else if (cmd === 'profiling-pool') {
     const { mainLoop } = require('./workers/pool-locator-worker');
     mainLoop().then(() => process.exit(0)).catch(error => {
