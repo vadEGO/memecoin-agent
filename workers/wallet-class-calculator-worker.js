@@ -52,7 +52,10 @@ function calculateWalletClassCounts(holders) {
       counts.others++;
     } else {
       for (const type of types) {
-        if (counts.hasOwnProperty(type)) {
+        // Map singular types to plural counts
+        if (type === 'sniper') counts.snipers++;
+        else if (type === 'insider') counts.insiders++;
+        else if (counts.hasOwnProperty(type)) {
           counts[type]++;
         }
       }
@@ -102,24 +105,47 @@ async function processTokenClassCalculation(token) {
     
     // Calculate wallet class counts
     const counts = calculateWalletClassCounts(holders);
+    console.log('Debug counts:', counts);
     
     // Calculate percentages
-    const percentages = calculatePercentages(counts, holders_count || holders.length);
+    const totalHolders = holders_count || holders.length;
+    console.log('Total holders for percentage calc:', totalHolders);
+    const percentages = calculatePercentages(counts, totalHolders);
+    console.log('Debug percentages:', percentages);
+    console.log('Specific sniper percentage:', (counts.snipers / totalHolders) * 100);
+    console.log('percentages.snipers before update:', percentages.snipers);
     
     // Calculate top10 share
     const top10Share = calculateTop10Share(holders);
     
     // Update token with calculated values
-    updateTokenClassCounts.run(
-      counts.fresh, percentages.fresh,
-      counts.inception, percentages.inception,
-      counts.snipers, percentages.snipers,
-      counts.bundled, percentages.bundled,
-      counts.insiders, percentages.insiders,
-      counts.others, percentages.others,
-      top10Share,
-      mint
-    );
+    console.log('Updating with:', {
+      fresh: [counts.fresh, percentages.fresh],
+      inception: [counts.inception, percentages.inception],
+      snipers: [counts.snipers, percentages.snipers],
+      bundled: [counts.bundled, percentages.bundled],
+      insiders: [counts.insiders, percentages.insiders],
+      others: [counts.others, percentages.others],
+      top10Share
+    });
+    console.log('percentages.snipers specifically:', percentages.snipers);
+    
+    try {
+      updateTokenClassCounts.run(
+        counts.fresh, percentages.fresh,
+        counts.inception, percentages.inception,
+        counts.snipers, percentages.snipers,
+        counts.bundled, percentages.bundled,
+        counts.insiders, percentages.insiders,
+        counts.others, percentages.others,
+        top10Share,
+        mint
+      );
+      console.log('Database update successful');
+    } catch (error) {
+      console.error('Database update failed:', error);
+      throw error;
+    }
     
     logger.success('wallet-class-calc', mint, 'complete', `Wallet class calculation completed`, {
       totalHolders: holders.length,
