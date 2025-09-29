@@ -21,14 +21,41 @@ function showRecent(limit = 20) {
             first_seen_at,
             authorities_revoked, 
             lp_exists, 
-            liquidity_usd
+            liquidity_usd,
+            health_score,
+            fresh_pct,
+            snipers_pct,
+            insiders_pct
         FROM tokens
         ORDER BY datetime(first_seen_at) DESC
         LIMIT ?
     `).all(validatedLimit);
     
     console.log(`📊 Recent ${validatedLimit} tokens:`);
-    console.table(rows);
+    
+    // Format each row with mint-first display and health score
+    const { formatTokenDisplay, formatHealthScore } = require('./lib/visual-encoding');
+    
+    rows.forEach((row, index) => {
+        const display = formatTokenDisplay(row.symbol, row.mint);
+        const healthDisplay = row.health_score !== null ? formatHealthScore(row.health_score) : 'N/A';
+        const healthNum = row.health_score !== null ? row.health_score.toFixed(1) : 'N/A';
+        
+        console.log(`${index + 1}. ${display} • Health ${healthNum} ${healthDisplay}`);
+        console.log(`   Source: ${row.source} • Seen: ${row.first_seen_at}`);
+        if (row.liquidity_usd) {
+            console.log(`   💰 Liquidity: $${row.liquidity_usd.toFixed(0)}`);
+        }
+        if (row.fresh_pct !== null || row.snipers_pct !== null || row.insiders_pct !== null) {
+            const metrics = [];
+            if (row.fresh_pct !== null) metrics.push(`Fresh: ${row.fresh_pct.toFixed(1)}%`);
+            if (row.snipers_pct !== null) metrics.push(`Snipers: ${row.snipers_pct.toFixed(1)}%`);
+            if (row.insiders_pct !== null) metrics.push(`Insiders: ${row.insiders_pct.toFixed(1)}%`);
+            console.log(`   📊 ${metrics.join(' • ')}`);
+        }
+        console.log(`   Copy: \`${row.mint}\``);
+        console.log('');
+    });
 }
 
 function showRecentPump(limit = 20) {
@@ -171,6 +198,20 @@ function showStats() {
         FROM tokens
     `).get();
     
+    const healthStats = db.prepare(`
+        SELECT 
+            COUNT(health_score) as tokens_with_health,
+            AVG(health_score) as avg_health,
+            MIN(health_score) as min_health,
+            MAX(health_score) as max_health,
+            SUM(CASE WHEN health_score >= 80 THEN 1 ELSE 0 END) as excellent_count,
+            SUM(CASE WHEN health_score >= 60 AND health_score < 80 THEN 1 ELSE 0 END) as good_count,
+            SUM(CASE WHEN health_score >= 40 AND health_score < 60 THEN 1 ELSE 0 END) as fair_count,
+            SUM(CASE WHEN health_score < 40 THEN 1 ELSE 0 END) as poor_count
+        FROM tokens
+        WHERE health_score IS NOT NULL
+    `).get();
+    
     console.log('\n📊 System Statistics:');
     console.log(`   Total Tokens: ${totals.tokens}`);
     console.table(bySource);
@@ -191,6 +232,15 @@ function showStats() {
     console.log(`   Tokens with fresh wallets: ${holdersStats.tokens_with_fresh}/${holdersStats.total_tokens}`);
     console.log(`   Average holders: ${holdersStats.avg_holders ? holdersStats.avg_holders.toFixed(2) : 'N/A'}`);
     console.log(`   Average fresh wallets: ${holdersStats.avg_fresh ? holdersStats.avg_fresh.toFixed(2) : 'N/A'}`);
+    
+    console.log('\n🎯 Health Score Status:');
+    console.log(`   Tokens with health scores: ${healthStats.tokens_with_health}/${totals.tokens}`);
+    console.log(`   Average health score: ${healthStats.avg_health ? healthStats.avg_health.toFixed(1) : 'N/A'}`);
+    console.log(`   Health range: ${healthStats.min_health ? healthStats.min_health.toFixed(1) : 'N/A'} - ${healthStats.max_health ? healthStats.max_health.toFixed(1) : 'N/A'}`);
+    console.log(`   🟢 Excellent (80+): ${healthStats.excellent_count || 0}`);
+    console.log(`   🟡 Good (60-79): ${healthStats.good_count || 0}`);
+    console.log(`   🟠 Fair (40-59): ${healthStats.fair_count || 0}`);
+    console.log(`   🔴 Poor (<40): ${healthStats.poor_count || 0}`);
 }
 
 function showErrors(limit = 20) {
@@ -631,6 +681,132 @@ function showWalletClasses(mint) {
     console.log(`\nCopy mint: \`${mint}\``);
 }
 
+function showBundlers(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js bundlers <MINT>');
+        console.log('   Example: node cli.js bundlers So11111111111111111111111111111111111111112');
+        process.exit(1);
+    }
+    
+    // Get token info
+    const token = db.prepare('SELECT mint, symbol FROM tokens WHERE mint = ?').get(mint);
+    
+    if (!token) {
+        console.log(`❌ Token not found: ${mint}`);
+        return;
+    }
+    
+    // Get bundler data - funders who funded multiple recipients who bought this token
+    const bundlers = db.prepare(`
+        SELECT 
+            h.funded_by as funder,
+            COUNT(DISTINCT h.owner) as recipient_count,
+            GROUP_CONCAT(DISTINCT h.owner) as recipients
+        FROM holders h
+        WHERE h.mint = ? 
+            AND h.funded_by IS NOT NULL 
+            AND h.is_bundler = 1
+        GROUP BY h.funded_by
+        ORDER BY recipient_count DESC
+    `).all(mint);
+    
+    const { formatTokenDisplay } = require('./lib/visual-encoding');
+    
+    console.log(`🔗 Bundlers for ${formatTokenDisplay(token.symbol, mint)}`);
+    console.log('─'.repeat(60));
+    
+    if (bundlers.length === 0) {
+        console.log('No bundlers found for this token');
+        return;
+    }
+    
+    bundlers.forEach((bundler, index) => {
+        console.log(`${index + 1}. ${bundler.funder.slice(0, 8)}…${bundler.funder.slice(-8)} → ${bundler.recipient_count} recipients`);
+        const recipients = bundler.recipients.split(',').slice(0, 5); // Show first 5
+        recipients.forEach(recipient => {
+            console.log(`   └─ ${recipient.slice(0, 8)}…${recipient.slice(-8)}`);
+        });
+        if (bundler.recipients.split(',').length > 5) {
+            console.log(`   └─ ... and ${bundler.recipients.split(',').length - 5} more`);
+        }
+        console.log('');
+    });
+    
+    console.log(`Copy mint: \`${mint}\``);
+}
+
+function showInsiderDetails(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js insider-details <MINT>');
+        console.log('   Example: node cli.js insider-details So11111111111111111111111111111111111111112');
+        process.exit(1);
+    }
+    
+    // Get token info
+    const token = db.prepare('SELECT mint, symbol, dev_wallet FROM tokens WHERE mint = ?').get(mint);
+    
+    if (!token) {
+        console.log(`❌ Token not found: ${mint}`);
+        return;
+    }
+    
+    // Get insider holders with their flag details
+    const insiders = db.prepare(`
+        SELECT 
+            h.owner,
+            h.wallet_age_days,
+            h.amount,
+            h.funded_by,
+            h.holder_type,
+            CASE 
+                WHEN h.funded_by = ? OR h.funded_by IN (
+                    SELECT src_wallet FROM funding_edges WHERE dst_wallet = ?
+                ) THEN 1 ELSE 0 
+            END as f1_lineage,
+            CASE 
+                WHEN h.wallet_age_days <= 2 THEN 1 ELSE 0 
+            END as f2_age,
+            CASE 
+                WHEN h.amount IN (
+                    SELECT amount FROM holders 
+                    WHERE mint = ? 
+                    ORDER BY CAST(amount AS REAL) DESC 
+                    LIMIT 10
+                ) THEN 1 ELSE 0 
+            END as f3_top10
+        FROM holders h
+        WHERE h.mint = ? AND h.is_insider = 1
+        ORDER BY CAST(h.amount AS REAL) DESC
+    `).all(mint, token.dev_wallet, token.dev_wallet, mint);
+    
+    const { formatTokenDisplay } = require('./lib/visual-encoding');
+    
+    console.log(`🕵️ Insider Details for ${formatTokenDisplay(token.symbol, mint)}`);
+    console.log('─'.repeat(80));
+    console.log('F1: Funding lineage with dev | F2: Wallet age ≤48h | F3: Top-10 by balance');
+    console.log('');
+    
+    if (insiders.length === 0) {
+        console.log('No insiders found for this token');
+        return;
+    }
+    
+    insiders.forEach((insider, index) => {
+        const flags = [];
+        if (insider.f1_lineage) flags.push('F1');
+        if (insider.f2_age) flags.push('F2');
+        if (insider.f3_top10) flags.push('F3');
+        
+        console.log(`${index + 1}. ${insider.owner.slice(0, 8)}…${insider.owner.slice(-8)}`);
+        console.log(`   Flags: ${flags.join(' + ')} (${flags.length}/3)`);
+        console.log(`   Age: ${insider.wallet_age_days} days | Amount: ${insider.amount}`);
+        console.log(`   Funded by: ${insider.funded_by ? insider.funded_by.slice(0, 8) + '…' + insider.funded_by.slice(-8) : 'N/A'}`);
+        console.log('');
+    });
+    
+    console.log(`Copy mint: \`${mint}\``);
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -656,6 +832,8 @@ Commands:
   profiling-run        Run full wallet profiling pipeline
   discord-alert <MINT> Generate Discord/Telegram alert for token
   classes <MINT>       Show wallet class breakdown for token
+  bundlers <MINT>      Show bundler funder → recipients mapping
+  insider-details <MINT> Show insider details with 2-of-3 rule evidence
   candidates [N]       Show candidate tokens ranked by quality
   profiling-pool       Run pool locator worker
   profiling-sniper     Run sniper detector worker
@@ -737,6 +915,10 @@ if (cmd === 'recent') {
     showDiscordAlert(process.argv[3]);
 } else if (cmd === 'classes') {
     showWalletClasses(process.argv[3]);
+} else if (cmd === 'bundlers') {
+    showBundlers(process.argv[3]);
+} else if (cmd === 'insider-details') {
+    showInsiderDetails(process.argv[3]);
 } else if (cmd === 'candidates') {
     const limit = process.argv[3];
     showCandidates(limit);
