@@ -417,6 +417,149 @@ function showScore(mint) {
     console.log(`   Fresh: ${(walletTypes.total_holders || 0) - (walletTypes.inception_count || 0)}`);
 }
 
+function showTopTokens(limit = 20) {
+    const validatedLimit = validateNumber(limit, 20);
+    
+    const topTokens = db.prepare(`
+        SELECT 
+            mint,
+            symbol,
+            name,
+            holders_count,
+            fresh_wallets_count,
+            health_score,
+            fresh_percentage,
+            sniper_percentage,
+            health_grade,
+            snapshot_time
+        FROM v_token_scores
+        WHERE holders_count > 0
+        ORDER BY health_score DESC, holders_count DESC
+        LIMIT ?
+    `).all(validatedLimit);
+    
+    if (topTokens.length === 0) {
+        console.log('🔍 No tokens with scores found');
+        return;
+    }
+    
+    console.log(`🏆 Top ${validatedLimit} Tokens by Health Score:`);
+    console.log('');
+    
+    const formattedTokens = topTokens.map((token, index) => ({
+        '#': index + 1,
+        'Token': (token.symbol || 'Unknown').substring(0, 12),
+        'Holders': token.holders_count,
+        'Fresh%': token.fresh_percentage + '%',
+        'Sniper%': token.sniper_percentage + '%',
+        'Health': token.health_score,
+        'Grade': token.health_grade,
+        'Updated': new Date(token.snapshot_time).toLocaleString()
+    }));
+    
+    console.table(formattedTokens);
+}
+
+function showMomentumCurve(mint, limit = 20) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js curve <MINT> [LIMIT]');
+        console.log('   Example: node cli.js curve So11111111111111111111111111111111111111112 10');
+        process.exit(1);
+    }
+    
+    const validatedLimit = validateNumber(limit, 20);
+    
+    // Get token info
+    const token = db.prepare('SELECT mint, symbol, name FROM tokens WHERE mint = ?').get(mint);
+    if (!token) {
+        console.log(`❌ Token not found: ${mint}`);
+        return;
+    }
+    
+    // Get momentum curve data
+    const curve = db.prepare(`
+        SELECT 
+            snapshot_time,
+            holders_count,
+            fresh_wallets_count,
+            health_score,
+            fresh_ratio,
+            top10_share,
+            sniper_ratio,
+            holders_growth_rate,
+            fresh_growth_rate
+        FROM v_momentum_curves
+        WHERE mint = ?
+        ORDER BY datetime(snapshot_time) ASC
+        LIMIT ?
+    `).all(mint, validatedLimit);
+    
+    if (curve.length === 0) {
+        console.log(`🔍 No momentum curve data found for ${mint}`);
+        console.log(`   Token: ${token.symbol || 'Unknown'} (${token.name || 'Unknown'})`);
+        return;
+    }
+    
+    console.log(`📈 Momentum Curve for ${mint.substring(0, 8)}...`);
+    console.log(`   Token: ${token.symbol || 'Unknown'} (${token.name || 'Unknown'})`);
+    console.log('');
+    
+    // Format curve data
+    const formattedCurve = curve.map((point, index) => ({
+        '#': index + 1,
+        'Time': new Date(point.snapshot_time).toLocaleString(),
+        'Holders': point.holders_count,
+        'Fresh': point.fresh_wallets_count,
+        'Health': point.health_score,
+        'Fresh%': (point.fresh_ratio * 100).toFixed(1) + '%',
+        'Top10%': (point.top10_share * 100).toFixed(1) + '%',
+        'H.Growth': point.holders_growth_rate ? point.holders_growth_rate + '%' : 'N/A',
+        'F.Growth': point.fresh_growth_rate ? point.fresh_growth_rate + '%' : 'N/A'
+    }));
+    
+    console.table(formattedCurve);
+}
+
+function showWalletProfiling() {
+    const { displayTokenTable } = require('./workers/wallet-profiling-worker');
+    displayTokenTable();
+}
+
+function showWalletProfilingDetail(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js profiling-detail <MINT>');
+        console.log('   Example: node cli.js profiling-detail So11111111111111111111111111111111111111112');
+        process.exit(1);
+    }
+    
+    const { displayTokenDetail } = require('./workers/wallet-profiling-worker');
+    displayTokenDetail(mint);
+}
+
+function runWalletProfiling() {
+    console.log('🔄 Running wallet profiling pipeline...');
+    const { mainLoop } = require('./workers/wallet-profiling-worker');
+    mainLoop().then(() => {
+        console.log('✅ Wallet profiling completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Wallet profiling failed:', error.message);
+        process.exit(1);
+    });
+}
+
+function showDiscordAlert(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js discord-alert <MINT>');
+        console.log('   Example: node cli.js discord-alert So11111111111111111111111111111111111111112');
+        process.exit(1);
+    }
+    
+    const { generateDiscordAlert } = require('./workers/wallet-profiling-worker');
+    const alert = generateDiscordAlert(mint);
+    console.log(alert);
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -428,11 +571,25 @@ Commands:
   events <MINT>        Show events for specific token
   holders <MINT> [N]   Show top holders for specific token (default: 20)
   momentum <MINT> [N]  Show holder growth momentum over time (default: 20)
+  curve <MINT> [N]     Show momentum curve with growth rates (default: 20)
   score <MINT>         Show health score and wallet analysis
+  top [N]              Show top tokens by health score (default: 20)
   errors [N]           Show recent enrichment errors (default: 20)
   unenriched [N]       Show tokens still needing enrichment (default: 20)
   enrich <MINT>        Force enrich a single token
   stats                Show comprehensive statistics
+  
+  🔍 Wallet Profiling (Task 8):
+  profiling            Show wallet profiling dashboard
+  profiling-detail <MINT>  Show detailed wallet analysis for token
+  profiling-run        Run full wallet profiling pipeline
+  discord-alert <MINT> Generate Discord/Telegram alert for token
+  profiling-pool       Run pool locator worker
+  profiling-sniper     Run sniper detector worker
+  profiling-bundler    Run bundler detector worker
+  profiling-insider    Run insider detector worker
+  profiling-health     Run health score calculator
+  
   help                 Show this help message
 
 Examples:
@@ -441,11 +598,18 @@ Examples:
   npm run cli -- events So11111111111111111111111111111111111111112
   npm run cli -- holders So11111111111111111111111111111111111111112 10
   npm run cli -- momentum So11111111111111111111111111111111111111112 10
+  npm run cli -- curve So11111111111111111111111111111111111111112 10
   npm run cli -- score So11111111111111111111111111111111111111112
+  npm run cli -- top 20
   npm run cli -- errors 10
   npm run cli -- unenriched 15
   npm run cli -- enrich 7ypeXztHG9pGX2mkZdm9hcMhYp4KRL4wZFmLxHXzpump
   npm run cli -- stats
+  
+  # Wallet Profiling
+  npm run cli -- profiling
+  npm run cli -- profiling-detail So11111111111111111111111111111111111111112
+  npm run cli -- profiling-run
 `);
 }
 
@@ -472,6 +636,13 @@ if (cmd === 'recent') {
 } else if (cmd === 'score') {
     const mint = process.argv[3];
     showScore(mint);
+} else if (cmd === 'top') {
+    const limit = process.argv[3];
+    showTopTokens(limit);
+} else if (cmd === 'curve') {
+    const mint = process.argv[3];
+    const limit = process.argv[4];
+    showMomentumCurve(mint, limit);
 } else if (cmd === 'errors') {
     const n = process.argv[3];
     showErrors(n);
@@ -482,6 +653,44 @@ if (cmd === 'recent') {
     enrichSingle(process.argv[3]);
 } else if (cmd === 'stats') {
     showStats();
+} else if (cmd === 'profiling') {
+    showWalletProfiling();
+} else if (cmd === 'profiling-detail') {
+    showWalletProfilingDetail(process.argv[3]);
+} else if (cmd === 'profiling-run') {
+    runWalletProfiling();
+} else if (cmd === 'discord-alert') {
+    showDiscordAlert(process.argv[3]);
+} else if (cmd === 'profiling-pool') {
+    const { mainLoop } = require('./workers/pool-locator-worker');
+    mainLoop().then(() => process.exit(0)).catch(error => {
+        console.error('❌ Pool locator failed:', error.message);
+        process.exit(1);
+    });
+} else if (cmd === 'profiling-sniper') {
+    const { mainLoop } = require('./workers/sniper-detector-worker');
+    mainLoop().then(() => process.exit(0)).catch(error => {
+        console.error('❌ Sniper detector failed:', error.message);
+        process.exit(1);
+    });
+} else if (cmd === 'profiling-bundler') {
+    const { mainLoop } = require('./workers/bundler-detector-worker');
+    mainLoop().then(() => process.exit(0)).catch(error => {
+        console.error('❌ Bundler detector failed:', error.message);
+        process.exit(1);
+    });
+} else if (cmd === 'profiling-insider') {
+    const { mainLoop } = require('./workers/insider-detector-worker');
+    mainLoop().then(() => process.exit(0)).catch(error => {
+        console.error('❌ Insider detector failed:', error.message);
+        process.exit(1);
+    });
+} else if (cmd === 'profiling-health') {
+    const { mainLoop } = require('./workers/health-score-worker');
+    mainLoop().then(() => process.exit(0)).catch(error => {
+        console.error('❌ Health score calculator failed:', error.message);
+        process.exit(1);
+    });
 } else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
     showHelp();
 } else {

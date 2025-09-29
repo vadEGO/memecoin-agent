@@ -23,8 +23,8 @@ const pickTokensForHolders = db.prepare(`
 `);
 
 const upsertHolder = db.prepare(`
-  INSERT OR REPLACE INTO holders (mint, owner, amount, last_seen_at, wallet_age_days, is_inception, is_sniper, is_bundler, is_insider, first_seen_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT OR REPLACE INTO holders (mint, owner, amount, last_seen_at, wallet_age_days, is_inception, is_sniper, is_bundler, is_insider, first_seen_at, holder_type)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updateTokenCounts = db.prepare(`
@@ -93,12 +93,20 @@ function classifyWallet(owner, tokenAccounts, inceptionHolders, transactions, fi
   // Insider: received SOL from same wallet as dev (simplified check)
   const isInsider = false; // TODO: Implement insider detection logic
   
+  // Determine clean holder_type
+  let holderType = 'fresh';
+  if (isInception) holderType = 'inception';
+  else if (isSniper) holderType = 'sniper';
+  else if (isBundler) holderType = 'bundler';
+  else if (isInsider) holderType = 'insider';
+  
   return {
     walletAge,
     isInception: isInception ? 1 : 0,
     isSniper: isSniper ? 1 : 0,
     isBundler: isBundler ? 1 : 0,
-    isInsider: isInsider ? 1 : 0
+    isInsider: isInsider ? 1 : 0,
+    holderType
   };
 }
 
@@ -247,7 +255,8 @@ async function processTokenHolders(token) {
         classification.isSniper,
         classification.isBundler,
         classification.isInsider,
-        account.lastSeen
+        account.lastSeen,
+        classification.holderType
       );
       
       classifiedHolders.push({

@@ -13,7 +13,14 @@
     "test": "node test-webhook.js",
     "vet": "node workers/vetting-worker.js",
     "enrich": "node enrich/worker.js",
-    "holders": "node workers/holders-worker.js"
+    "holders": "node workers/holders-worker.js",
+    "momentum": "node workers/momentum-worker.js",
+    "pool-locator": "node workers/pool-locator-worker.js",
+    "sniper-detector": "node workers/sniper-detector-worker.js",
+    "bundler-detector": "node workers/bundler-detector-worker.js",
+    "insider-detector": "node workers/insider-detector-worker.js",
+    "health-score": "node workers/health-score-worker.js",
+    "wallet-profiling": "node workers/wallet-profiling-worker.js"
   },
   "keywords": [
     "solana",
@@ -30,6 +37,7 @@
   "dependencies": {
     "@solana/web3.js": "^1.95.2",
     "better-sqlite3": "^12.4.1",
+    "chalk": "^4.1.2",
     "dayjs": "^1.11.13",
     "dotenv": "^17.2.2",
     "express": "^4.21.2",
