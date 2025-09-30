@@ -1140,10 +1140,10 @@ function showRugRisk(mint) {
     }
 
     console.log(`🚨 Rug Risk Analysis for ${mint}:`);
-    const { RugRiskScorerWorker } = require('./workers/rug-risk-scorer-worker');
-    const worker = new RugRiskScorerWorker();
+    const { EnhancedRugRiskScorerWorker } = require('./workers/enhanced-rug-risk-scorer-worker');
+    const worker = new EnhancedRugRiskScorerWorker();
     
-    const rugData = worker.getRugRiskData(mint);
+    const rugData = worker.getEnhancedRugRiskData(mint);
     
     if (!rugData) {
         console.log('   No rug risk data found for this token');
@@ -1155,27 +1155,42 @@ function showRugRisk(mint) {
 
     console.log('─'.repeat(80));
     console.log(`Token: ${tokenDisplay}`);
-    console.log(`Rug Risk Score: ${rugData.rug_risk_score || 'N/A'}/100`);
     console.log('');
 
-    // LP Safety
+    // Enhanced LP Safety with percentages and confidence
     console.log('🔒 LP Safety:');
-    console.log(`   LP Burned: ${rugData.lp_burned === 1 ? '✅ Yes' : rugData.lp_burned === 0 ? '❌ No' : '❓ Unknown'}`);
-    console.log(`   LP Locked: ${rugData.lp_locked === 1 ? '✅ Yes' : rugData.lp_locked === 0 ? '❌ No' : '❓ Unknown'}`);
-    console.log(`   Top 1 Holder: ${rugData.lp_owner_top1_pct ? (rugData.lp_owner_top1_pct * 100).toFixed(1) + '%' : 'N/A'}`);
-    console.log(`   Top 5 Holders: ${rugData.lp_owner_top5_pct ? (rugData.lp_owner_top5_pct * 100).toFixed(1) + '%' : 'N/A'}`);
+    const burnStatus = rugData.lp_burn_pct !== null 
+        ? `${(rugData.lp_burn_pct * 100).toFixed(0)}%` 
+        : 'Unknown';
+    const lockStatus = rugData.lp_locked_confidence === 2 
+        ? `High (${rugData.lp_lock_provider || 'Unknown'})`
+        : rugData.lp_locked_confidence === 1 
+        ? `Low (${rugData.lp_lock_provider || 'Unknown'})`
+        : 'No';
+    
+    console.log(`   LP: Burn ${burnStatus} • Lock: ${lockStatus} • Top1 ${(rugData.lp_owner_top1_pct * 100).toFixed(0)}% • Top5 ${(rugData.lp_owner_top5_pct * 100).toFixed(0)}%`);
+    console.log('');
+
+    // Liquidity Deltas with EMA notation
+    console.log('💧 Liquidity Behavior:');
+    const delta5m = rugData.liquidity_usd_5m_delta ? (rugData.liquidity_usd_5m_delta * 100).toFixed(1) + '%' : 'N/A';
+    const delta15m = rugData.liquidity_usd_15m_delta ? (rugData.liquidity_usd_15m_delta * 100).toFixed(1) + '%' : 'N/A';
+    console.log(`   ΔLiq: ${delta5m}/5m, ${delta15m}/15m (EMA) • ΔPrice: N/A/15m (TWAP)`);
     console.log('');
 
     // Authority Safety
     console.log('🛡️  Authority Safety:');
-    console.log(`   Authorities Revoked: ${rugData.authorities_revoked === 1 ? '✅ Yes' : '❌ No'}`);
+    console.log(`   Authorities: mint_revoked=${rugData.authorities_revoked === 1 ? 'Yes' : 'No'}, freeze_revoked=${rugData.authorities_revoked === 1 ? 'Yes' : 'No'}`);
     console.log('');
 
-    // Liquidity Behavior
-    console.log('💧 Liquidity Behavior:');
-    console.log(`   Current Liquidity: ${rugData.liquidity_usd ? '$' + (rugData.liquidity_usd / 1000).toFixed(1) + 'k' : 'N/A'}`);
-    console.log(`   5m Delta: ${rugData.liquidity_usd_5m_delta ? (rugData.liquidity_usd_5m_delta * 100).toFixed(1) + '%' : 'N/A'}`);
-    console.log(`   15m Delta: ${rugData.liquidity_usd_15m_delta ? (rugData.liquidity_usd_15m_delta * 100).toFixed(1) + '%' : 'N/A'}`);
+    // Enhanced Rug Score with breakdown
+    console.log('🎯 Rug Risk Score:');
+    if (rugData.rug_breakdown) {
+        const breakdown = JSON.parse(rugData.rug_breakdown);
+        console.log(`   RugScore: ${rugData.rug_risk_score || 'N/A'} (LP:${breakdown.lp_safety}, Auth:${breakdown.authorities}, Drains:${breakdown.drains}, Concentration:${breakdown.concentration})`);
+    } else {
+        console.log(`   RugScore: ${rugData.rug_risk_score || 'N/A'}/100`);
+    }
     console.log('');
 
     // Risk Flags
@@ -1185,9 +1200,9 @@ function showRugRisk(mint) {
         flags.forEach(flag => {
             console.log(`   • ${flag}`);
         });
+        console.log('');
     }
 
-    console.log('');
     console.log('🔗 Links:');
     console.log(`   Dexscreener: https://dexscreener.com/solana/${mint}`);
     console.log(`   Birdeye: https://birdeye.so/token/${mint}`);
@@ -1320,6 +1335,30 @@ function runRugRiskScorer() {
         process.exit(0);
     }).catch(error => {
         console.error('❌ Rug risk scorer worker failed:', error.message);
+        process.exit(1);
+    });
+}
+
+function runEnhancedPoolIntrospector() {
+    console.log('🔄 Running enhanced pool introspector worker...');
+    const { mainLoop } = require('./workers/enhanced-pool-introspector-worker');
+    mainLoop().then(() => {
+        console.log('✅ Enhanced pool introspector worker completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Enhanced pool introspector worker failed:', error.message);
+        process.exit(1);
+    });
+}
+
+function runEnhancedRugRiskScorer() {
+    console.log('🔄 Running enhanced rug risk scorer worker...');
+    const { mainLoop } = require('./workers/enhanced-rug-risk-scorer-worker');
+    mainLoop().then(() => {
+        console.log('✅ Enhanced rug risk scorer worker completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Enhanced rug risk scorer worker failed:', error.message);
         process.exit(1);
     });
 }
@@ -1541,6 +1580,10 @@ if (cmd === 'recent') {
     runLiquidityDrainMonitor();
 } else if (cmd === 'rug-risk-scorer') {
     runRugRiskScorer();
+} else if (cmd === 'enhanced-pool-introspector') {
+    runEnhancedPoolIntrospector();
+} else if (cmd === 'enhanced-rug-risk-scorer') {
+    runEnhancedRugRiskScorer();
 } else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
     showHelp();
 } else {

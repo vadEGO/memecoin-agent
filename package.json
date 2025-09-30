@@ -31,7 +31,9 @@
     "backtest-harness": "node workers/backtest-harness-worker.js",
     "pool-introspector": "node workers/pool-introspector-worker.js",
     "liquidity-monitor": "node workers/liquidity-drain-monitor-worker.js",
-    "rug-risk-scorer": "node workers/rug-risk-scorer-worker.js"
+    "rug-risk-scorer": "node workers/rug-risk-scorer-worker.js",
+    "enhanced-pool-introspector": "node workers/enhanced-pool-introspector-worker.js",
+    "enhanced-rug-risk-scorer": "node workers/enhanced-rug-risk-scorer-worker.js"
   },
   "keywords": [
     "solana",
