@@ -25,7 +25,10 @@
     "history-snapshot": "node workers/history-snapshot-worker.js",
     "alert-engine": "node workers/alert-engine-worker.js",
     "score-snapshot": "node workers/score-snapshot-worker.js",
-    "enhanced-alert-engine": "node workers/enhanced-alert-engine-worker.js"
+    "enhanced-alert-engine": "node workers/enhanced-alert-engine-worker.js",
+    "price-sampling": "node workers/price-sampling-worker.js",
+    "return-labels": "node workers/return-labels-worker.js",
+    "backtest-harness": "node workers/backtest-harness-worker.js"
   },
   "keywords": [
     "solana",

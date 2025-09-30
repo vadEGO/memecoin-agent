@@ -963,6 +963,175 @@ function showEnhancedHealthScoring() {
     }
 }
 
+function showPriceHistory(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js price-history <MINT>');
+        console.log('   Example: node cli.js price-history So11111111111111111111111111111111111111112');
+        return;
+    }
+
+    console.log(`📈 Price History for ${mint}:`);
+    const { PriceSamplingWorker } = require('./workers/price-sampling-worker');
+    const worker = new PriceSamplingWorker();
+    
+    const history = worker.getPriceHistory(mint, 10);
+    
+    if (history.length === 0) {
+        console.log('   No price history found for this token');
+        return;
+    }
+
+    console.log('─'.repeat(100));
+    console.log('Timestamp'.padEnd(20) + 'Price USD'.padEnd(12) + 'Price SOL'.padEnd(12) + 'Liquidity'.padEnd(12) + 'Granularity'.padEnd(10) + 'Status');
+    console.log('─'.repeat(100));
+
+    history.forEach(record => {
+        const timestamp = new Date(record.timestamp).toLocaleString();
+        const priceUsd = record.price_usd ? `$${record.price_usd.toFixed(6)}` : 'N/A';
+        const priceSol = record.price_sol ? `${record.price_sol.toFixed(8)}` : 'N/A';
+        const liquidity = record.liquidity_usd ? `$${(record.liquidity_usd / 1000).toFixed(1)}k` : 'N/A';
+        const granularity = record.granularity || 'N/A';
+        const status = record.status || 'N/A';
+
+        console.log(
+            timestamp.padEnd(20) +
+            priceUsd.padEnd(12) +
+            priceSol.padEnd(12) +
+            liquidity.padEnd(12) +
+            granularity.padEnd(10) +
+            status
+        );
+    });
+}
+
+function showReturnLabels(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js labels <MINT>');
+        console.log('   Example: node cli.js labels So11111111111111111111111111111111111111112');
+        return;
+    }
+
+    console.log(`🏷️  Return Labels for ${mint}:`);
+    const { ReturnLabelsWorker } = require('./workers/return-labels-worker');
+    const worker = new ReturnLabelsWorker();
+    
+    const labels = worker.getReturnLabels(mint);
+    
+    if (labels.length === 0) {
+        console.log('   No return labels found for this token');
+        return;
+    }
+
+    console.log('─'.repeat(120));
+    console.log('Anchor Time'.padEnd(20) + 'Price 30m'.padEnd(12) + 'Price 6h'.padEnd(12) + 'Price 24h'.padEnd(12) + 'RET 6h'.padEnd(10) + 'RET 24h'.padEnd(10) + 'Winner 50'.padEnd(10) + 'Winner 100'.padEnd(10) + 'Loser 50');
+    console.log('─'.repeat(120));
+
+    labels.forEach(label => {
+        const anchorTime = new Date(label.anchor_timestamp).toLocaleString();
+        const price30m = label.price_30m ? `$${label.price_30m.toFixed(6)}` : 'N/A';
+        const price6h = label.price_6h ? `$${label.price_6h.toFixed(6)}` : 'N/A';
+        const price24h = label.price_24h ? `$${label.price_24h.toFixed(6)}` : 'N/A';
+        const ret6h = label.ret_6h ? `${(label.ret_6h * 100).toFixed(1)}%` : 'N/A';
+        const ret24h = label.ret_24h ? `${(label.ret_24h * 100).toFixed(1)}%` : 'N/A';
+        const winner50 = label.winner_50 ? '✅' : '❌';
+        const winner100 = label.winner_100 ? '✅' : '❌';
+        const loser50 = label.loser_50 ? '✅' : '❌';
+
+        console.log(
+            anchorTime.padEnd(20) +
+            price30m.padEnd(12) +
+            price6h.padEnd(12) +
+            price24h.padEnd(12) +
+            ret6h.padEnd(10) +
+            ret24h.padEnd(10) +
+            winner50.padEnd(10) +
+            winner100.padEnd(10) +
+            loser50
+        );
+    });
+}
+
+function runBacktestHarness(sampleSize = 500, since = '7d') {
+    console.log(`🔄 Running backtest harness with sample size ${sampleSize}...`);
+    const { BacktestHarnessWorker } = require('./workers/backtest-harness-worker');
+    const worker = new BacktestHarnessWorker();
+    
+    worker.runBacktest(sampleSize, since).then((results) => {
+        if (results) {
+            worker.formatBacktestResults(results);
+        }
+        console.log('✅ Backtest harness completed');
+    }).catch(error => {
+        console.error('❌ Backtest harness failed:', error.message);
+    });
+}
+
+function showBacktestLast() {
+    console.log('📊 Latest Backtest Results:');
+    const { BacktestHarnessWorker } = require('./workers/backtest-harness-worker');
+    const worker = new BacktestHarnessWorker();
+    
+    const results = worker.getLatestBacktestResults();
+    
+    if (results.length === 0) {
+        console.log('   No backtest results found for the last 7 days');
+        return;
+    }
+
+    // Group by ruleset_id
+    const groupedResults = {};
+    results.forEach(result => {
+        if (!groupedResults[result.ruleset_id]) {
+            groupedResults[result.ruleset_id] = {
+                rulesetId: result.ruleset_id,
+                timestamp: result.created_at,
+                rules: []
+            };
+        }
+        groupedResults[result.ruleset_id].rules.push(result);
+    });
+
+    Object.values(groupedResults).forEach((ruleset, index) => {
+        console.log(`\n${index + 1}. Ruleset: ${ruleset.rulesetId}`);
+        console.log(`   Timestamp: ${new Date(ruleset.timestamp).toLocaleString()}`);
+        console.log('   ─'.repeat(60));
+
+        ruleset.rules.forEach(rule => {
+            console.log(`   ${rule.alert_type.toUpperCase()}:`);
+            console.log(`     Precision (+50%): ${(rule.precision_50 * 100).toFixed(1)}%`);
+            console.log(`     Precision (+100%): ${(rule.precision_100 * 100).toFixed(1)}%`);
+            console.log(`     Lift (+50%): ${rule.lift_50.toFixed(2)}x`);
+            console.log(`     Lift (+100%): ${rule.lift_100.toFixed(2)}x`);
+            console.log(`     Volume: ${rule.volume_per_day.toFixed(1)} alerts/day`);
+            console.log(`     Sample Size: ${rule.sample_size}`);
+        });
+    });
+}
+
+function runPriceSampling() {
+    console.log('🔄 Running price sampling worker...');
+    const { mainLoop } = require('./workers/price-sampling-worker');
+    mainLoop().then(() => {
+        console.log('✅ Price sampling worker completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Price sampling worker failed:', error.message);
+        process.exit(1);
+    });
+}
+
+function runReturnLabels() {
+    console.log('🔄 Running return labels worker...');
+    const { mainLoop } = require('./workers/return-labels-worker');
+    mainLoop().then(() => {
+        console.log('✅ Return labels worker completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Return labels worker failed:', error.message);
+        process.exit(1);
+    });
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -990,6 +1159,14 @@ Commands:
   backtest             Show backtest results and metrics
   backtest-retune      Run backtest re-tuning
   health-analysis      Show enhanced health scoring analysis
+  
+  📈 Task 10 Price Feeds & Backtests:
+  price-history <MINT> Show price history for specific token
+  labels <MINT>        Show return labels for specific token
+  backtest-run [N]     Run backtest harness (default: 500 tokens)
+  backtest-last        Show latest backtest results
+  price-sampling       Run price sampling worker
+  return-labels        Run return labels worker
   
   🔍 Wallet Profiling (Task 8):
   profiling            Show wallet profiling dashboard
@@ -1138,6 +1315,19 @@ if (cmd === 'recent') {
     runBacktestRetune();
 } else if (cmd === 'health-analysis') {
     showEnhancedHealthScoring();
+} else if (cmd === 'price-history') {
+    showPriceHistory(process.argv[3]);
+} else if (cmd === 'labels') {
+    showReturnLabels(process.argv[3]);
+} else if (cmd === 'backtest-run') {
+    const sampleSize = process.argv[3] ? parseInt(process.argv[3]) : 500;
+    runBacktestHarness(sampleSize);
+} else if (cmd === 'backtest-last') {
+    showBacktestLast();
+} else if (cmd === 'price-sampling') {
+    runPriceSampling();
+} else if (cmd === 'return-labels') {
+    runReturnLabels();
 } else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
     showHelp();
 } else {
