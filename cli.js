@@ -1132,6 +1132,198 @@ function runReturnLabels() {
     });
 }
 
+function showRugRisk(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js rug <MINT>');
+        console.log('   Example: node cli.js rug So11111111111111111111111111111111111111112');
+        return;
+    }
+
+    console.log(`🚨 Rug Risk Analysis for ${mint}:`);
+    const { RugRiskScorerWorker } = require('./workers/rug-risk-scorer-worker');
+    const worker = new RugRiskScorerWorker();
+    
+    const rugData = worker.getRugRiskData(mint);
+    
+    if (!rugData) {
+        console.log('   No rug risk data found for this token');
+        return;
+    }
+
+    const { formatTokenDisplayWithHealth } = require('./lib/visual-encoding');
+    const tokenDisplay = formatTokenDisplayWithHealth(rugData.symbol, rugData.mint, null, true, 40);
+
+    console.log('─'.repeat(80));
+    console.log(`Token: ${tokenDisplay}`);
+    console.log(`Rug Risk Score: ${rugData.rug_risk_score || 'N/A'}/100`);
+    console.log('');
+
+    // LP Safety
+    console.log('🔒 LP Safety:');
+    console.log(`   LP Burned: ${rugData.lp_burned === 1 ? '✅ Yes' : rugData.lp_burned === 0 ? '❌ No' : '❓ Unknown'}`);
+    console.log(`   LP Locked: ${rugData.lp_locked === 1 ? '✅ Yes' : rugData.lp_locked === 0 ? '❌ No' : '❓ Unknown'}`);
+    console.log(`   Top 1 Holder: ${rugData.lp_owner_top1_pct ? (rugData.lp_owner_top1_pct * 100).toFixed(1) + '%' : 'N/A'}`);
+    console.log(`   Top 5 Holders: ${rugData.lp_owner_top5_pct ? (rugData.lp_owner_top5_pct * 100).toFixed(1) + '%' : 'N/A'}`);
+    console.log('');
+
+    // Authority Safety
+    console.log('🛡️  Authority Safety:');
+    console.log(`   Authorities Revoked: ${rugData.authorities_revoked === 1 ? '✅ Yes' : '❌ No'}`);
+    console.log('');
+
+    // Liquidity Behavior
+    console.log('💧 Liquidity Behavior:');
+    console.log(`   Current Liquidity: ${rugData.liquidity_usd ? '$' + (rugData.liquidity_usd / 1000).toFixed(1) + 'k' : 'N/A'}`);
+    console.log(`   5m Delta: ${rugData.liquidity_usd_5m_delta ? (rugData.liquidity_usd_5m_delta * 100).toFixed(1) + '%' : 'N/A'}`);
+    console.log(`   15m Delta: ${rugData.liquidity_usd_15m_delta ? (rugData.liquidity_usd_15m_delta * 100).toFixed(1) + '%' : 'N/A'}`);
+    console.log('');
+
+    // Risk Flags
+    if (rugData.rug_flags) {
+        console.log('🚩 Risk Flags:');
+        const flags = rugData.rug_flags.split(',').filter(f => f.trim());
+        flags.forEach(flag => {
+            console.log(`   • ${flag}`);
+        });
+    }
+
+    console.log('');
+    console.log('🔗 Links:');
+    console.log(`   Dexscreener: https://dexscreener.com/solana/${mint}`);
+    console.log(`   Birdeye: https://birdeye.so/token/${mint}`);
+    console.log(`   Solscan: https://solscan.io/token/${mint}`);
+    console.log(`   Copy: \`${mint}\``);
+}
+
+function showLiquidityWatch(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js watch-liq <MINT>');
+        console.log('   Example: node cli.js watch-liq So11111111111111111111111111111111111111112');
+        return;
+    }
+
+    console.log(`💧 Liquidity Watch for ${mint}:`);
+    const { LiquidityDrainMonitorWorker } = require('./workers/liquidity-drain-monitor-worker');
+    const worker = new LiquidityDrainMonitorWorker();
+    
+    const liqData = worker.getLiquidityMonitoringData(mint);
+    
+    if (!liqData) {
+        console.log('   No liquidity data found for this token');
+        return;
+    }
+
+    console.log('─'.repeat(60));
+    console.log(`Current Liquidity: $${(liqData.liquidity_usd / 1000).toFixed(1)}k`);
+    console.log(`Last Recorded: $${liqData.liquidity_usd_last ? (liqData.liquidity_usd_last / 1000).toFixed(1) + 'k' : 'N/A'}`);
+    console.log('');
+
+    // Deltas with trend indicators
+    const delta5m = liqData.liquidity_usd_5m_delta;
+    const delta15m = liqData.liquidity_usd_15m_delta;
+
+    console.log('📊 Liquidity Deltas:');
+    if (delta5m !== null) {
+        const trend5m = delta5m > 0 ? '📈' : delta5m < -0.1 ? '📉' : '➡️';
+        console.log(`   5m: ${trend5m} ${(delta5m * 100).toFixed(1)}%`);
+    } else {
+        console.log('   5m: ❓ No data');
+    }
+
+    if (delta15m !== null) {
+        const trend15m = delta15m > 0 ? '📈' : delta15m < -0.1 ? '📉' : '➡️';
+        console.log(`   15m: ${trend15m} ${(delta15m * 100).toFixed(1)}%`);
+    } else {
+        console.log('   15m: ❓ No data');
+    }
+
+    console.log('');
+    console.log('⚠️  Drain Alerts:');
+    if (delta5m !== null && delta5m <= -0.40) {
+        console.log(`   🚨 Rapid 5m drain: ${(delta5m * 100).toFixed(1)}%`);
+    }
+    if (delta15m !== null && delta15m <= -0.65) {
+        console.log(`   🚨 Critical 15m drain: ${(delta15m * 100).toFixed(1)}%`);
+    }
+    if (delta15m !== null && delta15m <= -0.40 && delta15m > -0.65) {
+        console.log(`   ⚠️  Sustained drain: ${(delta15m * 100).toFixed(1)}%`);
+    }
+    if ((!delta5m || delta5m > -0.40) && (!delta15m || delta15m > -0.40)) {
+        console.log('   ✅ No significant drains detected');
+    }
+}
+
+function showCandidatesRisk(limit = 10) {
+    const validatedLimit = validateNumber(limit, 10);
+    const { RugRiskScorerWorker } = require('./workers/rug-risk-scorer-worker');
+    const worker = new RugRiskScorerWorker();
+    
+    const highRiskTokens = worker.getHighRiskTokens(validatedLimit);
+    
+    if (highRiskTokens.length === 0) {
+        console.log('🔍 No high-risk tokens found (RugScore ≥ 60)');
+        console.log('   All tokens appear to have low rug risk');
+    } else {
+        console.log(`🚨 High-Risk Tokens (RugScore ≥ 60):`);
+        
+        const { formatTokenDisplayWithHealth } = require('./lib/visual-encoding');
+        const formattedRows = highRiskTokens.map((row, index) => ({
+            '#': index + 1,
+            'Token': formatTokenDisplayWithHealth(row.symbol, row.mint, null, true, 40),
+            'RugScore': row.rug_risk_score ? row.rug_risk_score.toFixed(1) : 'N/A',
+            'Liq': row.liquidity_usd ? `$${(row.liquidity_usd / 1000).toFixed(1)}k` : '$0',
+            'Top1%': row.lp_owner_top1_pct ? (row.lp_owner_top1_pct * 100).toFixed(1) + '%' : 'N/A',
+            'Top5%': row.lp_owner_top5_pct ? (row.lp_owner_top5_pct * 100).toFixed(1) + '%' : 'N/A',
+            'Flags': row.rug_flags ? row.rug_flags.split(',').slice(0, 2).join(', ') : 'N/A'
+        }));
+        
+        console.table(formattedRows);
+        
+        console.log('\n⚠️  Risk Legend:');
+        console.log('   lp_unburned: LP tokens not burned');
+        console.log('   lp_unlocked: LP tokens not locked');
+        console.log('   top1_gt20: Top holder owns >20% of LP');
+        console.log('   drain_40_5m: -40% liquidity drain in 5m');
+        console.log('   authorities_active: Mint/freeze authorities still active');
+    }
+}
+
+function runPoolIntrospector() {
+    console.log('🔄 Running pool introspector worker...');
+    const { mainLoop } = require('./workers/pool-introspector-worker');
+    mainLoop().then(() => {
+        console.log('✅ Pool introspector worker completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Pool introspector worker failed:', error.message);
+        process.exit(1);
+    });
+}
+
+function runLiquidityDrainMonitor() {
+    console.log('🔄 Running liquidity drain monitor worker...');
+    const { mainLoop } = require('./workers/liquidity-drain-monitor-worker');
+    mainLoop().then(() => {
+        console.log('✅ Liquidity drain monitor worker completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Liquidity drain monitor worker failed:', error.message);
+        process.exit(1);
+    });
+}
+
+function runRugRiskScorer() {
+    console.log('🔄 Running rug risk scorer worker...');
+    const { mainLoop } = require('./workers/rug-risk-scorer-worker');
+    mainLoop().then(() => {
+        console.log('✅ Rug risk scorer worker completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Rug risk scorer worker failed:', error.message);
+        process.exit(1);
+    });
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -1167,6 +1359,14 @@ Commands:
   backtest-last        Show latest backtest results
   price-sampling       Run price sampling worker
   return-labels        Run return labels worker
+  
+  🚨 Task 11 Rug Checks & Safety:
+  rug <MINT>           Show rug risk analysis for specific token
+  watch-liq <MINT>     Stream liquidity monitoring with deltas
+  candidates-risk [N]  Show high-risk tokens ranked by RugScore
+  pool-introspector    Run pool introspector worker
+  liquidity-monitor    Run liquidity drain monitor worker
+  rug-risk-scorer      Run rug risk scorer worker
   
   🔍 Wallet Profiling (Task 8):
   profiling            Show wallet profiling dashboard
@@ -1328,6 +1528,19 @@ if (cmd === 'recent') {
     runPriceSampling();
 } else if (cmd === 'return-labels') {
     runReturnLabels();
+} else if (cmd === 'rug') {
+    showRugRisk(process.argv[3]);
+} else if (cmd === 'watch-liq') {
+    showLiquidityWatch(process.argv[3]);
+} else if (cmd === 'candidates-risk') {
+    const limit = process.argv[3] ? parseInt(process.argv[3]) : 10;
+    showCandidatesRisk(limit);
+} else if (cmd === 'pool-introspector') {
+    runPoolIntrospector();
+} else if (cmd === 'liquidity-monitor') {
+    runLiquidityDrainMonitor();
+} else if (cmd === 'rug-risk-scorer') {
+    runRugRiskScorer();
 } else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
     showHelp();
 } else {
