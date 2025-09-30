@@ -85,55 +85,26 @@ function showRecentPump(limit = 20) {
 
 function showCandidates(limit = 20) {
     const validatedLimit = validateNumber(limit, 20);
-    const rows = db.prepare(`
-        SELECT 
-            mint, 
-            symbol, 
-            name, 
-            source, 
-            first_seen_at,
-            authorities_revoked, 
-            lp_exists, 
-            liquidity_usd,
-            holders_count,
-            fresh_pct,
-            snipers_pct,
-            insiders_pct,
-            top10_share,
-            health_score
-        FROM tokens
-        WHERE authorities_revoked = 1 
-            AND lp_exists = 1 
-            AND liquidity_usd >= 5000
-            AND top10_share <= 0.6
-            AND fresh_pct IS NOT NULL
-            AND snipers_pct IS NOT NULL
-            AND insiders_pct IS NOT NULL
-        ORDER BY fresh_pct DESC, health_score DESC, liquidity_usd DESC
-        LIMIT ?
-    `).all(validatedLimit);
     
-    if (rows.length === 0) {
-        console.log('🔍 No candidate tokens found (need authorities_revoked=1 AND liquidity_usd >= $5k AND top10_share <= 60%)');
+    // Use enhanced candidates for better trader-focused results
+    const EnhancedCandidates = require('./lib/enhanced-candidates');
+    const candidates = new EnhancedCandidates();
+    
+    const enhancedCandidates = candidates.getEnhancedCandidates(validatedLimit);
+    
+    if (enhancedCandidates.length === 0) {
+        console.log('🔍 No enhanced candidates found (need liq ≥ $5k, fresh% ≥ 55%, insider% ≤ 10%, sniper% ≤ 8%)');
         console.log('   Try lowering the threshold or check if any tokens meet criteria');
     } else {
-        console.log(`🎯 Candidate tokens (ranked by Fresh% high, Insider% low, Sniper% low):`);
+        candidates.formatCandidatesDisplay(enhancedCandidates);
         
-        // Format the rows for display
-        const { formatTokenDisplayWithHealth } = require('./lib/visual-encoding');
-        const formattedRows = rows.map((row, index) => ({
-            '#': index + 1,
-            'Token': formatTokenDisplayWithHealth(row.symbol, row.mint, row.health_score, true, 40),
-            'Fresh%': row.fresh_pct ? row.fresh_pct.toFixed(1) + '%' : 'N/A',
-            'Snipers%': row.snipers_pct ? row.snipers_pct.toFixed(1) + '%' : 'N/A',
-            'Insiders%': row.insiders_pct ? row.insiders_pct.toFixed(1) + '%' : 'N/A',
-            'Top10%': row.top10_share ? (row.top10_share * 100).toFixed(1) + '%' : 'N/A',
-            'Health': row.health_score ? row.health_score.toFixed(1) : 'N/A',
-            'Liq': row.liquidity_usd ? `$${(row.liquidity_usd / 1000).toFixed(1)}k` : '$0',
-            'Holders': row.holders_count || 0
-        }));
-        
-        console.table(formattedRows);
+        // Show statistics
+        const stats = candidates.getCandidatesStats();
+        if (stats) {
+            console.log(`\n📊 Enhanced Candidates Statistics:`);
+            console.log(`   Total: ${stats.totalCandidates} | Avg Health: ${stats.averageHealth} | Avg Fresh: ${stats.averageFresh}%`);
+            console.log(`   Avg Snipers: ${stats.averageSnipers}% | Avg Insiders: ${stats.averageInsiders}% | Avg Liq: $${(stats.averageLiquidity / 1000).toFixed(1)}k`);
+        }
     }
 }
 
@@ -938,6 +909,60 @@ function runScoreSnapshot() {
     });
 }
 
+function showBacktestResults() {
+    console.log('📊 Running backtest analysis...');
+    const BacktestMethodology = require('./lib/backtest-methodology');
+    const backtest = new BacktestMethodology();
+    
+    const results = backtest.formatBacktestResults();
+    console.log(results);
+}
+
+function runBacktestRetune() {
+    console.log('🔄 Running backtest re-tune...');
+    const BacktestMethodology = require('./lib/backtest-methodology');
+    const backtest = new BacktestMethodology();
+    
+    const results = backtest.rollingRetune();
+    if (results) {
+        console.log('✅ Backtest re-tune completed');
+        console.log(`   Ruleset ID: ${results.rulesetId}`);
+        console.log(`   Timestamp: ${results.timestamp}`);
+        
+        for (const [alertType, result] of Object.entries(results.results)) {
+            console.log(`   ${alertType.toUpperCase()}: Precision ${(result.metrics.precision * 100).toFixed(1)}%, Lift ${result.metrics.lift.toFixed(2)}x`);
+        }
+    } else {
+        console.error('❌ Backtest re-tune failed');
+    }
+}
+
+function showEnhancedHealthScoring() {
+    console.log('🎯 Running enhanced health scoring analysis...');
+    const EnhancedHealthScoring = require('./lib/enhanced-health-scoring');
+    const scoring = new EnhancedHealthScoring();
+    
+    const distribution = scoring.getScoreDistribution();
+    if (distribution) {
+        console.log('📊 Enhanced Health Score Distribution:');
+        console.log(`   Total Tokens: ${distribution.total}`);
+        console.log(`   Average Score: ${distribution.average}`);
+        console.log(`   Score Range: ${distribution.range.min} - ${distribution.range.max}`);
+        console.log('');
+        console.log('   Distribution:');
+        console.log(`     🟢 Excellent (80+): ${distribution.distribution.excellent}`);
+        console.log(`     🔵 Good (60-79): ${distribution.distribution.good}`);
+        console.log(`     🟡 Fair (40-59): ${distribution.distribution.fair}`);
+        console.log(`     🔴 Poor (<40): ${distribution.distribution.poor}`);
+        console.log('');
+        console.log('   Quality Metrics:');
+        console.log(`     Pegged at 0: ${distribution.extremes.peggedAtZero}`);
+        console.log(`     Pegged at 100: ${distribution.extremes.peggedAtMax}`);
+    } else {
+        console.log('❌ Failed to get health score distribution');
+    }
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -962,6 +987,9 @@ Commands:
   score-history <MINT> Show score history for specific token
   alert-engine         Run alert engine worker
   score-snapshot       Run score snapshot worker
+  backtest             Show backtest results and metrics
+  backtest-retune      Run backtest re-tuning
+  health-analysis      Show enhanced health scoring analysis
   
   🔍 Wallet Profiling (Task 8):
   profiling            Show wallet profiling dashboard
@@ -1104,6 +1132,12 @@ if (cmd === 'recent') {
     runAlertEngine();
 } else if (cmd === 'score-snapshot') {
     runScoreSnapshot();
+} else if (cmd === 'backtest') {
+    showBacktestResults();
+} else if (cmd === 'backtest-retune') {
+    runBacktestRetune();
+} else if (cmd === 'health-analysis') {
+    showEnhancedHealthScoring();
 } else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
     showHelp();
 } else {

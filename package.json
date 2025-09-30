@@ -24,7 +24,8 @@
     "wallet-class-calc": "node workers/wallet-class-calculator-worker.js",
     "history-snapshot": "node workers/history-snapshot-worker.js",
     "alert-engine": "node workers/alert-engine-worker.js",
-    "score-snapshot": "node workers/score-snapshot-worker.js"
+    "score-snapshot": "node workers/score-snapshot-worker.js",
+    "enhanced-alert-engine": "node workers/enhanced-alert-engine-worker.js"
   },
   "keywords": [
     "solana",
