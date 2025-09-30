@@ -9,12 +9,17 @@ db.pragma('journal_mode = WAL');
 // --- Database Queries ---
 const pickTokensForHealthScore = db.prepare(`
   SELECT mint, symbol, holders_count, fresh_wallets_count, liquidity_usd, 
-         sniper_count, bundler_count, insider_count, health_score
+         sniper_count, bundler_count, insider_count, health_score,
+         fresh_pct, sniper_pct, insider_pct, top10_share
   FROM tokens
   WHERE first_seen_at IS NOT NULL
-    AND datetime(first_seen_at) > datetime('now', '-24 hours')
+    AND datetime(first_seen_at) > datetime('now', '-48 hours')
+    AND lp_exists = 1
+    AND holders_count IS NOT NULL
+    AND (fresh_pct IS NOT NULL OR fresh_wallets_count IS NOT NULL)
+    AND health_score IS NULL
   ORDER BY datetime(first_seen_at) DESC
-  LIMIT 20
+  LIMIT 50
 `);
 
 const getTop10Holders = db.prepare(`
@@ -54,6 +59,30 @@ function normalizeValue(value, min, max) {
   return Math.max(0, Math.min(1, (value - min) / (max - min)));
 }
 
+function calculateMomentumBonus(mint) {
+  try {
+    // Get health score from 15 minutes ago and current
+    const oldScore = db.prepare(`
+      SELECT health_score FROM score_history
+      WHERE mint = ? AND datetime(snapshot_time) <= datetime('now', '-15 minutes')
+      ORDER BY snapshot_time DESC LIMIT 1
+    `).get(mint);
+    
+    const currentScore = db.prepare(`
+      SELECT health_score FROM tokens WHERE mint = ?
+    `).get(mint);
+    
+    if (oldScore && currentScore) {
+      const deltaHealth = currentScore.health_score - oldScore.health_score;
+      return Math.max(0, Math.min(5, deltaHealth / 2)); // Clamp to 0-5 points
+    }
+    
+    return 0;
+  } catch (error) {
+    return 0;
+  }
+}
+
 function calculateHealthScore(token) {
   const {
     mint,
@@ -62,19 +91,36 @@ function calculateHealthScore(token) {
     liquidity_usd = 0,
     sniper_count = 0,
     bundler_count = 0,
-    insider_count = 0
+    insider_count = 0,
+    fresh_pct = null,
+    sniper_pct = null,
+    insider_pct = null,
+    top10_share = null
   } = token;
   
-  // Calculate ratios
-  const freshRatio = holders_count > 0 ? fresh_wallets_count / holders_count : 0;
-  const sniperRatio = holders_count > 0 ? sniper_count / holders_count : 0;
-  const insiderRatio = holders_count > 0 ? insider_count / holders_count : 0;
+  // Handle NULLs with neutral priors (NA-aware scoring)
+  let freshRatio = fresh_pct !== null ? fresh_pct : 
+    (holders_count > 0 ? fresh_wallets_count / holders_count : 0.50); // neutral prior = 50%
   
-  // Calculate top 10 concentration
-  const top10Concentration = calculateTop10Concentration(mint);
+  let sniperRatio = sniper_pct !== null ? sniper_pct : 
+    (holders_count > 0 ? sniper_count / holders_count : 0.10); // neutral risk = 10%
   
-  // Normalize liquidity (log scale)
-  const liquidityScore = Math.log10(Math.max(1, liquidity_usd)) / 6; // Normalize to 0-1 for $1 to $1M
+  let insiderRatio = insider_pct !== null ? insider_pct : 
+    (holders_count > 0 ? insider_count / holders_count : 0.10); // neutral risk = 10%
+  
+  // Calculate top 10 concentration with NULL handling
+  let top10Concentration = top10_share !== null ? top10_share : 
+    calculateTop10Concentration(mint);
+  
+  // Calculate liquidity score with NULL handling
+  const liquidityScore = liquidity_usd !== null ? 
+    Math.log10(Math.max(1, liquidity_usd)) / 6 : 0.40; // neutral prior = 40% of max
+
+  // Cap extremes to reduce outlier impact
+  freshRatio = Math.min(freshRatio, 0.90); // Cap at 90%
+  sniperRatio = Math.min(sniperRatio, 0.50); // Cap at 50%
+  insiderRatio = Math.min(insiderRatio, 0.50); // Cap at 50%
+  top10Concentration = Math.min(top10Concentration, 0.90); // Cap at 90%
   
   // Calculate health score components (weights sum to 100)
   const freshScore = freshRatio * 35; // +35 points max
@@ -83,8 +129,15 @@ function calculateHealthScore(token) {
   const insiderPenalty = insiderRatio * 20; // -20 points max
   const concentrationPenalty = top10Concentration * 10; // -10 points max
   
-  // Calculate final score
+  // Calculate base score
   let healthScore = freshScore + liquidityScoreWeighted - sniperPenalty - insiderPenalty - concentrationPenalty;
+  
+  // Add floor and momentum bonus
+  healthScore = 5 + 0.95 * healthScore; // Base floor: 5 + 0.95 * score
+  
+  // Add momentum bonus if we have two snapshots
+  const momentumBonus = calculateMomentumBonus(mint);
+  healthScore += momentumBonus;
   
   // Clamp to 0-100 range
   healthScore = Math.max(0, Math.min(100, healthScore));

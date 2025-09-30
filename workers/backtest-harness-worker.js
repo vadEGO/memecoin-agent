@@ -23,8 +23,8 @@ class BacktestHarnessWorker {
           t.symbol,
           t.health_score,
           t.fresh_pct,
-          t.snipers_pct,
-          t.insiders_pct,
+          t.sniper_pct,
+          t.insider_pct,
           t.top10_share,
           t.liquidity_usd,
           t.holders_count,
@@ -37,12 +37,9 @@ class BacktestHarnessWorker {
         LEFT JOIN return_labels rl ON t.mint = rl.mint
         WHERE t.lp_exists = 1
           AND t.holders_count >= 50
-          AND t.health_score IS NOT NULL
-          AND t.fresh_pct IS NOT NULL
-          AND t.snipers_pct IS NOT NULL
-          AND t.insiders_pct IS NOT NULL
-          AND t.top10_share IS NOT NULL
           AND t.liquidity_usd IS NOT NULL
+          AND t.health_score IS NOT NULL
+          AND datetime(t.first_seen_at) > datetime('now', '-48 hours')
         ORDER BY t.first_seen_at DESC
         LIMIT ?
       `).all(sampleSize);

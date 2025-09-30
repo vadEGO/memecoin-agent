@@ -93,7 +93,7 @@ function showCandidates(limit = 20) {
     const enhancedCandidates = candidates.getEnhancedCandidates(validatedLimit);
     
     if (enhancedCandidates.length === 0) {
-        console.log('🔍 No enhanced candidates found (need liq ≥ $5k, fresh% ≥ 55%, insider% ≤ 10%, sniper% ≤ 8%)');
+        console.log('🔍 No enhanced candidates found (need liq ≥ $3k, holders ≥ 50, sniper% ≤ 15%, insider% ≤ 15%)');
         console.log('   Try lowering the threshold or check if any tokens meet criteria');
     } else {
         candidates.formatCandidatesDisplay(enhancedCandidates);
@@ -105,6 +105,113 @@ function showCandidates(limit = 20) {
             console.log(`   Total: ${stats.totalCandidates} | Avg Health: ${stats.averageHealth} | Avg Fresh: ${stats.averageFresh}%`);
             console.log(`   Avg Snipers: ${stats.averageSnipers}% | Avg Insiders: ${stats.averageInsiders}% | Avg Liq: $${(stats.averageLiquidity / 1000).toFixed(1)}k`);
         }
+    }
+}
+
+function showDataGaps() {
+    const Diagnostics = require('./lib/diagnostics');
+    const diagnostics = new Diagnostics();
+    
+    const gaps = diagnostics.getDataGaps();
+    if (!gaps) {
+        console.log('❌ Failed to get data gaps');
+        return;
+    }
+    
+    console.log('📊 Data Coverage Analysis:');
+    console.log(`   Total tokens: ${gaps.totalTokens}`);
+    console.log(`   Recent tokens (24h): ${gaps.recentTokens24h}`);
+    console.log(`   Recent tokens (48h): ${gaps.recentTokens48h}`);
+    console.log(`   Eligible cohort (24h): ${gaps.eligibleRecent24h}`);
+    console.log(`   Has liquidity data: ${gaps.hasLiquidityData}`);
+    console.log('');
+    console.log('🔍 Missing Features:');
+    console.log(`   Liquidity: ${gaps.missingLiquidity} (${((gaps.missingLiquidity/gaps.totalTokens)*100).toFixed(1)}%)`);
+    console.log(`   Holders: ${gaps.missingHolders} (${((gaps.missingHolders/gaps.totalTokens)*100).toFixed(1)}%)`);
+    console.log(`   Fresh%: ${gaps.missingFreshPct} (${((gaps.missingFreshPct/gaps.totalTokens)*100).toFixed(1)}%)`);
+    console.log(`   Sniper%: ${gaps.missingSniperPct} (${((gaps.missingSniperPct/gaps.totalTokens)*100).toFixed(1)}%)`);
+    console.log(`   Insider%: ${gaps.missingInsiderPct} (${((gaps.missingInsiderPct/gaps.totalTokens)*100).toFixed(1)}%)`);
+    console.log(`   Top10%: ${gaps.missingTop10Share} (${((gaps.missingTop10Share/gaps.totalTokens)*100).toFixed(1)}%)`);
+    console.log(`   Health Score: ${gaps.missingHealthScore} (${((gaps.missingHealthScore/gaps.totalTokens)*100).toFixed(1)}%)`);
+    console.log('');
+    console.log('⚙️ Enrichment Success Rates:');
+    console.log(`   Overall: ${gaps.enrichmentSuccessRate}%`);
+    console.log(`   Liquidity: ${gaps.liquiditySuccessRate}%`);
+    console.log(`   Holders: ${gaps.holdersSuccessRate}%`);
+    console.log(`   Fresh%: ${gaps.freshSuccessRate}%`);
+    
+    // Alarm if eligible cohort is too low
+    if (gaps.eligibleRecent24h === 0) {
+      console.log('');
+      console.log('🚨 ALARM: No eligible tokens in last 24h! Check enrichment pipeline.');
+    } else if (gaps.eligibleRecent24h < 5) {
+      console.log('');
+      console.log('⚠️  WARNING: Very low eligible cohort. Consider running backfill sweeper.');
+    }
+}
+
+function showHealthAnalysis() {
+    const Diagnostics = require('./lib/diagnostics');
+    const diagnostics = new Diagnostics();
+    
+    const analysis = diagnostics.getHealthAnalysisEligible();
+    if (!analysis) {
+        console.log('❌ Failed to get health analysis');
+        return;
+    }
+    
+    const { eligible, buckets } = analysis;
+    
+    console.log('🏥 Health Analysis (Eligible Cohort Only):');
+    console.log(`   Eligible tokens: ${eligible.eligible_count}`);
+    console.log(`   Average health: ${eligible.avg_health?.toFixed(2) || 'N/A'}`);
+    console.log(`   Range: ${eligible.min_health?.toFixed(2) || 'N/A'} - ${eligible.max_health?.toFixed(2) || 'N/A'}`);
+    console.log('');
+    console.log('📊 Health Bands:');
+    console.log(`   🟢 Excellent (80+): ${eligible.excellent_count}`);
+    console.log(`   🔵 Good (60-79): ${eligible.good_count}`);
+    console.log(`   🟡 Fair (40-59): ${eligible.fair_count}`);
+    console.log(`   🔴 Poor (<40): ${eligible.poor_count}`);
+    console.log('');
+    console.log('📈 Score Distribution:');
+    buckets.forEach(bucket => {
+        const bar = '█'.repeat(Math.ceil(bucket.count / 2));
+        console.log(`   ${bucket.bucket.toString().padStart(3)}: ${bar} (${bucket.count})`);
+    });
+}
+
+function showWhyNotCandidate(mint) {
+    if (!mint) {
+        console.log('❌ Please provide a mint address');
+        return;
+    }
+    
+    const Diagnostics = require('./lib/diagnostics');
+    const diagnostics = new Diagnostics();
+    
+    const analysis = diagnostics.whyNotCandidate(mint);
+    if (analysis.error) {
+        console.log(`❌ ${analysis.error}`);
+        return;
+    }
+    
+    const { token, reasons, isCandidate } = analysis;
+    
+    console.log(`🔍 Candidate Analysis for ${token.symbol || 'Unknown'} (${mint}):`);
+    console.log(`   Health Score: ${token.health_score || 'NULL'}`);
+    console.log(`   Liquidity: $${token.liquidity_usd?.toFixed(0) || 'NULL'}`);
+    console.log(`   Holders: ${token.holders_count || 'NULL'}`);
+    console.log(`   Fresh%: ${token.fresh_pct ? (token.fresh_pct * 100).toFixed(1) + '%' : 'NULL'}`);
+    console.log(`   Sniper%: ${token.sniper_pct ? (token.sniper_pct * 100).toFixed(1) + '%' : 'NULL'}`);
+    console.log(`   Insider%: ${token.insider_pct ? (token.insider_pct * 100).toFixed(1) + '%' : 'NULL'}`);
+    console.log(`   LP Exists: ${token.lp_exists}`);
+    console.log('');
+    
+    if (isCandidate) {
+        console.log('✅ This token IS a candidate!');
+    } else {
+        console.log('❌ This token is NOT a candidate. Reasons:');
+        reasons.forEach(reason => console.log(`   • ${reason}`));
     }
 }
 
@@ -1374,6 +1481,11 @@ Commands:
   events <MINT>        Show events for specific token
   holders <MINT> [N]   Show top holders for specific token (default: 20)
   momentum <MINT> [N]  Show holder growth momentum over time (default: 20)
+  
+  🩺 Diagnostics:
+  data-gaps            Show data coverage analysis
+  health-analysis      Show health score analysis for eligible tokens
+  why-not-candidate <MINT>  Analyze why a token isn't a candidate
   curve <MINT> [N]     Show momentum curve with growth rates (default: 20)
   score <MINT>         Show health score and wallet analysis
   top [N]              Show top tokens by health score (default: 20)
@@ -1456,6 +1568,12 @@ if (cmd === 'recent') {
 } else if (cmd === 'candidates') {
     const n = process.argv[3];
     showCandidates(n);
+} else if (cmd === 'data-gaps') {
+    showDataGaps();
+} else if (cmd === 'health-analysis') {
+    showHealthAnalysis();
+} else if (cmd === 'why-not-candidate') {
+    showWhyNotCandidate(process.argv[3]);
 } else if (cmd === 'events') {
     showEvents(process.argv[3]);
 } else if (cmd === 'holders') {

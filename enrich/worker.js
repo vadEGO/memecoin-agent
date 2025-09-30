@@ -11,31 +11,30 @@ const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEXSCREENER_BASE = process.env.DEXSCREENER_BASE || 'https://api.dexscreener.com';
 
 // --- Enhanced Queries ---
-const pickBatch = db.prepare(`
+// HOT: < 60 minutes old, never enriched or missing liq/holders
+const pickHotBatch = db.prepare(`
   SELECT mint, symbol, name, decimals, authorities_revoked, lp_exists, liquidity_usd,
          first_seen_at, last_enriched_at, enrich_attempts
   FROM tokens
-  WHERE (
-    symbol IS NULL OR name IS NULL OR decimals IS NULL
-    OR authorities_revoked IS NULL
-    OR lp_exists IS NULL OR liquidity_usd IS NULL
-  )
-  AND (
-    -- Hot: first hour → at most every 2 minutes
-    (datetime(first_seen_at) > datetime('now', '-60 minutes') AND
-     (last_enriched_at IS NULL OR datetime(last_enriched_at) <= datetime('now', '-2 minutes')))
-    OR
-    -- Warm: first 6h → at most every 15 minutes
-    (datetime(first_seen_at) > datetime('now', '-6 hours') AND
-     datetime(first_seen_at) <= datetime('now', '-60 minutes') AND
-     (last_enriched_at IS NULL OR datetime(last_enriched_at) <= datetime('now', '-15 minutes')))
-    OR
-    -- Cold: otherwise → at most daily
-    (datetime(first_seen_at) <= datetime('now', '-6 hours') AND
-     (last_enriched_at IS NULL OR datetime(last_enriched_at) <= datetime('now', '-1 day')))
-  )
+  WHERE datetime(first_seen_at) > datetime('now','-60 minutes')
+    AND (liquidity_usd IS NULL OR holders_count IS NULL)
+    AND (enrich_attempts IS NULL OR enrich_attempts < 10)
+    AND (last_enriched_at IS NULL OR datetime(last_enriched_at) <= datetime('now','-2 minutes'))
   ORDER BY datetime(first_seen_at) DESC
-  LIMIT 10
+  LIMIT 200
+`);
+
+// WARM: ≤ 7 days, still missing any class % or liq
+const pickWarmBatch = db.prepare(`
+  SELECT mint, symbol, name, decimals, authorities_revoked, lp_exists, liquidity_usd,
+         first_seen_at, last_enriched_at, enrich_attempts
+  FROM tokens
+  WHERE datetime(first_seen_at) > datetime('now','-7 days')
+    AND (fresh_pct IS NULL OR sniper_pct IS NULL OR insider_pct IS NULL OR liquidity_usd IS NULL)
+    AND (enrich_attempts IS NULL OR enrich_attempts < 12)
+    AND (last_enriched_at IS NULL OR datetime(last_enriched_at) <= datetime('now','-10 minutes'))
+  ORDER BY datetime(first_seen_at) DESC
+  LIMIT 500
 `);
 
 const markStart = db.prepare(`
@@ -166,7 +165,7 @@ async function fetchLiquidityDexScreener(mint) {
 
     const pairs = j?.pairs || [];
     if (!pairs.length) {
-      return { lp_exists: 0, liquidity_usd: null };
+      return { lp_exists: 0, liquidity_usd: 0, liq_status: 'no_pair' };
     }
 
     let maxUsd = 0;
@@ -177,7 +176,8 @@ async function fetchLiquidityDexScreener(mint) {
 
     return { 
       lp_exists: maxUsd > 0 ? 1 : 0, 
-      liquidity_usd: maxUsd > 0 ? maxUsd : null 
+      liquidity_usd: maxUsd, // Always persist, even if 0
+      liq_status: 'ok'
     };
   } catch (error) {
     logger.error('enrichment', mint, 'liquidity', `DexScreener liquidity check failed: ${error.message}`);
@@ -237,13 +237,25 @@ async function enrichOne(token) {
 }
 
 async function mainLoop() {
-  const batch = pickBatch.all();
+  // Try HOT batch first (most recent tokens)
+  let batch = pickHotBatch.all();
+  let batchType = 'HOT';
+  
+  // If no HOT tokens, try WARM batch
+  if (batch.length === 0) {
+    batch = pickWarmBatch.all();
+    batchType = 'WARM';
+  }
+  
   if (!batch.length) {
     logger.info('enrichment', null, 'batch', 'No tokens need enrichment');
     return;
   }
 
-  logger.info('enrichment', null, 'batch', `Processing ${batch.length} tokens for enrichment`, { batchSize: batch.length });
+  logger.info('enrichment', null, 'batch', `Processing ${batch.length} ${batchType} tokens for enrichment`, { 
+    batchSize: batch.length,
+    batchType: batchType
+  });
   
   for (const token of batch) {
     await enrichOne(token);
