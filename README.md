@@ -14,6 +14,9 @@
 - 📊 **CLI Interface** - Powerful command-line tools
 - 💾 **Dual Storage** - JSONL + SQLite persistence
 - ⚡ **High Performance** - Optimized for real-time processing
+- 🚨 **Alert System** - Intelligent alerts with anti-noise gates
+- 🎯 **Health Scoring** - Four-tier health bands with visual badges
+- 📈 **Score Tracking** - Adaptive snapshot frequency for trend analysis
 
 ## 🚀 Quick Start
 
@@ -75,6 +78,15 @@ cp .env.example .env
 | `candidates [N]` | Show quality-ranked candidates | `npm run cli -- candidates 10` |
 | `discord-alert <MINT>` | Generate Discord/Telegram alert | `npm run cli -- discord-alert So111...` |
 
+### 🚨 Alert System Commands (Task 9)
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `alerts [N]` | Show recent alerts with health badges | `npm run cli -- alerts 20` |
+| `score-history <MINT>` | Show score history for token | `npm run cli -- score-history So111...` |
+| `alert-engine` | Run alert engine worker | `npm run cli -- alert-engine` |
+| `score-snapshot` | Run score snapshot worker | `npm run cli -- score-snapshot` |
+
 ## 🎯 Mint-First Invariant
 
 **Every display must show `SYMBOL (MINT)` format with copy functionality. Symbol-only displays are disallowed.**
@@ -96,6 +108,35 @@ All explorer links are generated from mint address:
 - **Solscan**: `https://solscan.io/token/<MINT>`
 
 See [MINT_FIRST_INVARIANT.md](MINT_FIRST_INVARIANT.md) for complete details.
+
+## 🎯 Health Scoring System
+
+### Four Health Bands
+
+| Band | Score Range | Icon | Badge | Description |
+|------|-------------|------|-------|-------------|
+| **Excellent** | 80-100 | 🟢 | EXCELLENT | High-quality tokens with strong fundamentals |
+| **Good** | 60-79 | 🔵 | GOOD | Solid tokens with good potential |
+| **Fair** | 40-59 | 🟡 | FAIR | Average tokens with mixed signals |
+| **Poor** | 0-39 | 🔴 | POOR | Low-quality tokens with concerning metrics |
+
+### Health Score Calculation
+
+The health score is calculated using weighted components:
+- **Fresh Ratio**: +35 points max (early organic buyers)
+- **Liquidity Score**: +20 points max (log scale, $1 to $1M)
+- **Sniper Penalty**: -15 points max (bot/sniper activity)
+- **Insider Penalty**: -20 points max (insider trading)
+- **Concentration Penalty**: -10 points max (top 10 holder concentration)
+
+### Alert System
+
+Three intelligent alert types with anti-noise gates:
+- **🚀 Launch Alert**: High-quality token launches (Health ≥ 70, Liq ≥ $10k)
+- **📈 Momentum Upgrade**: Tokens gaining momentum (Health 60-79, Fresh% ≥ 40%)
+- **⚠️ Risk Alert**: Concerning metrics (Health < 40, high sniper/insider %)
+
+See [TASK9_ALERT_SYSTEM_README.md](TASK9_ALERT_SYSTEM_README.md) for complete details.
 
 ## 🏗️ Architecture
 

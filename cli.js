@@ -34,14 +34,14 @@ function showRecent(limit = 20) {
     console.log(`📊 Recent ${validatedLimit} tokens:`);
     
     // Format each row with mint-first display and health score
-    const { formatTokenDisplay, formatHealthScore } = require('./lib/visual-encoding');
+    const { formatTokenDisplayWithHealth, formatHealthScore } = require('./lib/visual-encoding');
     
     rows.forEach((row, index) => {
-        const display = formatTokenDisplay(row.symbol, row.mint);
+        const display = formatTokenDisplayWithHealth(row.symbol, row.mint, row.health_score);
         const healthDisplay = row.health_score !== null ? formatHealthScore(row.health_score) : 'N/A';
         const healthNum = row.health_score !== null ? row.health_score.toFixed(1) : 'N/A';
         
-        console.log(`${index + 1}. ${display} • Health ${healthNum} ${healthDisplay}`);
+        console.log(`${index + 1}. ${display} • Health ${healthNum}`);
         console.log(`   Source: ${row.source} • Seen: ${row.first_seen_at}`);
         if (row.liquidity_usd) {
             console.log(`   💰 Liquidity: $${row.liquidity_usd.toFixed(0)}`);
@@ -120,9 +120,10 @@ function showCandidates(limit = 20) {
         console.log(`🎯 Candidate tokens (ranked by Fresh% high, Insider% low, Sniper% low):`);
         
         // Format the rows for display
+        const { formatTokenDisplayWithHealth } = require('./lib/visual-encoding');
         const formattedRows = rows.map((row, index) => ({
             '#': index + 1,
-            'Token': `${row.symbol || 'Unknown'} (${row.mint.slice(0, 4)}…${row.mint.slice(-4)})`,
+            'Token': formatTokenDisplayWithHealth(row.symbol, row.mint, row.health_score, true, 40),
             'Fresh%': row.fresh_pct ? row.fresh_pct.toFixed(1) + '%' : 'N/A',
             'Snipers%': row.snipers_pct ? row.snipers_pct.toFixed(1) + '%' : 'N/A',
             'Insiders%': row.insiders_pct ? row.insiders_pct.toFixed(1) + '%' : 'N/A',
@@ -523,9 +524,10 @@ function showTopTokens(limit = 20) {
     console.log(`🏆 Top ${validatedLimit} Tokens by Health Score:`);
     console.log('');
     
+    const { formatTokenDisplayWithHealth } = require('./lib/visual-encoding');
     const formattedTokens = topTokens.map((token, index) => ({
         '#': index + 1,
-        'Token': (token.symbol || 'Unknown').substring(0, 12),
+        'Token': formatTokenDisplayWithHealth(token.symbol, token.mint, token.health_score, true, 30),
         'Holders': token.holders_count,
         'Fresh%': token.fresh_percentage + '%',
         'Sniper%': token.sniper_percentage + '%',
@@ -807,6 +809,135 @@ function showInsiderDetails(mint) {
     console.log(`Copy mint: \`${mint}\``);
 }
 
+// --- Task 9 Alert System Functions ---
+
+function showAlerts(limit = 20) {
+    const validatedLimit = validateNumber(limit, 20);
+    const rows = db.prepare(`
+        SELECT 
+            a.id,
+            a.mint,
+            t.symbol,
+            a.alert_type,
+            a.alert_level,
+            a.message,
+            a.triggered_at,
+            a.status,
+            a.metadata
+        FROM alerts a
+        LEFT JOIN tokens t ON a.mint = t.mint
+        ORDER BY datetime(a.triggered_at) DESC
+        LIMIT ?
+    `).all(validatedLimit);
+    
+    if (rows.length === 0) {
+        console.log('🔍 No alerts found');
+        return;
+    }
+    
+    console.log(`🚨 Recent ${validatedLimit} alerts:`);
+    console.log('');
+    
+    const { formatTokenDisplayWithHealth } = require('./lib/visual-encoding');
+    
+    rows.forEach((row, index) => {
+        const alertIcon = row.alert_type === 'launch' ? '🚀' : 
+                         row.alert_type === 'momentum_upgrade' ? '📈' : 
+                         row.alert_type === 'risk' ? '⚠️' : '🔔';
+        
+        const statusIcon = row.status === 'active' ? '🟢' : '🔴';
+        
+        console.log(`${index + 1}. ${alertIcon} ${row.alert_type.toUpperCase()} ${statusIcon}`);
+        console.log(`   Token: ${formatTokenDisplayWithHealth(row.symbol, row.mint, null, true, 50)}`);
+        console.log(`   Level: ${row.alert_level} • Status: ${row.status}`);
+        console.log(`   Triggered: ${new Date(row.triggered_at).toLocaleString()}`);
+        console.log(`   Message: ${row.message}`);
+        console.log('');
+    });
+}
+
+function showScoreHistory(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js score-history <MINT>');
+        console.log('   Example: node cli.js score-history So11111111111111111111111111111111111111112');
+        process.exit(1);
+    }
+    
+    // Get token info
+    const token = db.prepare('SELECT mint, symbol, name FROM tokens WHERE mint = ?').get(mint);
+    if (!token) {
+        console.log(`❌ Token not found: ${mint}`);
+        return;
+    }
+    
+    // Get score history
+    const history = db.prepare(`
+        SELECT 
+            snapshot_time,
+            health_score,
+            holders_count,
+            fresh_pct,
+            sniper_pct,
+            insider_pct,
+            top10_share,
+            liquidity_usd
+        FROM score_history
+        WHERE mint = ?
+        ORDER BY datetime(snapshot_time) DESC
+        LIMIT 50
+    `).all(mint);
+    
+    if (history.length === 0) {
+        console.log(`🔍 No score history found for ${mint}`);
+        console.log(`   Token: ${token.symbol || 'Unknown'} (${token.name || 'Unknown'})`);
+        return;
+    }
+    
+    console.log(`📊 Score History for ${token.symbol || 'Unknown'} (${mint.substring(0, 8)}...)`);
+    console.log(`   Token: ${token.name || 'Unknown'}`);
+    console.log('');
+    
+    // Format history data
+    const formattedHistory = history.map((snapshot, index) => ({
+        '#': index + 1,
+        'Time': new Date(snapshot.snapshot_time).toLocaleString(),
+        'Health': snapshot.health_score ? snapshot.health_score.toFixed(1) : 'N/A',
+        'Holders': snapshot.holders_count || 0,
+        'Fresh%': snapshot.fresh_pct ? (snapshot.fresh_pct * 100).toFixed(1) + '%' : 'N/A',
+        'Sniper%': snapshot.sniper_pct ? (snapshot.sniper_pct * 100).toFixed(1) + '%' : 'N/A',
+        'Insider%': snapshot.insider_pct ? (snapshot.insider_pct * 100).toFixed(1) + '%' : 'N/A',
+        'Top10%': snapshot.top10_share ? (snapshot.top10_share * 100).toFixed(1) + '%' : 'N/A',
+        'Liq': snapshot.liquidity_usd ? `$${(snapshot.liquidity_usd / 1000).toFixed(1)}k` : '$0'
+    }));
+    
+    console.table(formattedHistory);
+    console.log(`\nCopy mint: \`${mint}\``);
+}
+
+function runAlertEngine() {
+    console.log('🔄 Running alert engine...');
+    const { mainLoop } = require('./workers/alert-engine-worker');
+    mainLoop().then(() => {
+        console.log('✅ Alert engine completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Alert engine failed:', error.message);
+        process.exit(1);
+    });
+}
+
+function runScoreSnapshot() {
+    console.log('🔄 Running score snapshot worker...');
+    const { mainLoop } = require('./workers/score-snapshot-worker');
+    mainLoop().then(() => {
+        console.log('✅ Score snapshot worker completed');
+        process.exit(0);
+    }).catch(error => {
+        console.error('❌ Score snapshot worker failed:', error.message);
+        process.exit(1);
+    });
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -825,6 +956,12 @@ Commands:
   unenriched [N]       Show tokens still needing enrichment (default: 20)
   enrich <MINT>        Force enrich a single token
   stats                Show comprehensive statistics
+  
+  🚨 Task 9 Alert System:
+  alerts [N]           Show recent alerts (default: 20)
+  score-history <MINT> Show score history for specific token
+  alert-engine         Run alert engine worker
+  score-snapshot       Run score snapshot worker
   
   🔍 Wallet Profiling (Task 8):
   profiling            Show wallet profiling dashboard
@@ -958,6 +1095,15 @@ if (cmd === 'recent') {
         console.error('❌ History snapshot failed:', error.message);
         process.exit(1);
     });
+} else if (cmd === 'alerts') {
+    const n = process.argv[3];
+    showAlerts(n);
+} else if (cmd === 'score-history') {
+    showScoreHistory(process.argv[3]);
+} else if (cmd === 'alert-engine') {
+    runAlertEngine();
+} else if (cmd === 'score-snapshot') {
+    runScoreSnapshot();
 } else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
     showHelp();
 } else {

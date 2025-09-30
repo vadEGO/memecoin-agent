@@ -22,7 +22,9 @@
     "health-score": "node workers/health-score-worker.js",
     "wallet-profiling": "node workers/wallet-profiling-worker.js",
     "wallet-class-calc": "node workers/wallet-class-calculator-worker.js",
-    "history-snapshot": "node workers/history-snapshot-worker.js"
+    "history-snapshot": "node workers/history-snapshot-worker.js",
+    "alert-engine": "node workers/alert-engine-worker.js",
+    "score-snapshot": "node workers/score-snapshot-worker.js"
   },
   "keywords": [
     "solana",
