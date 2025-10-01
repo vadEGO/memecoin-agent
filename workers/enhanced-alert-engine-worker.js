@@ -102,6 +102,61 @@ class EnhancedAlertEngine {
   }
 
   /**
+   * Check probability thresholds for alerts
+   * @param {object} token - Token data with probabilities
+   * @param {string} alertType - Type of alert
+   * @returns {boolean} True if probability thresholds met
+   */
+  checkProbabilityThresholds(token, alertType) {
+    const prob2x = token.prob_2x_24h || 0;
+    const probRug = token.prob_rug_24h || 0;
+
+    switch (alertType) {
+      case 'launch':
+        // Launch alerts require ProbRug ≤ 0.25
+        return probRug <= 0.25;
+      
+      case 'momentum_upgrade':
+        // Momentum alerts trigger if Prob2x jumps by ≥0.10
+        // This would need to compare with previous snapshot
+        return prob2x >= 0.30; // Basic threshold for now
+      
+      case 'risk':
+        // Risk alerts: high priority if ProbRug ≥ 0.60
+        return probRug >= 0.60;
+      
+      default:
+        return true;
+    }
+  }
+
+  /**
+   * Format probability information for alerts
+   * @param {object} token - Token data with probabilities
+   * @returns {string} Formatted probability information
+   */
+  formatProbabilityInfo(token) {
+    const prob2x = token.prob_2x_24h || 0;
+    const probRug = token.prob_rug_24h || 0;
+    
+    const parts = [];
+    
+    if (prob2x > 0) {
+      const prob2xPct = (prob2x * 100).toFixed(0);
+      const color2x = prob2x >= 0.4 ? '🟢' : prob2x >= 0.25 ? '🟡' : '🔵';
+      parts.push(`${color2x} Prob2x ${prob2xPct}%`);
+    }
+    
+    if (probRug > 0) {
+      const probRugPct = (probRug * 100).toFixed(0);
+      const colorRug = probRug >= 0.6 ? '🔴' : probRug >= 0.3 ? '🟠' : '🟢';
+      parts.push(`${colorRug} Rug ${probRugPct}%`);
+    }
+    
+    return parts.length > 0 ? parts.join(' • ') : '';
+  }
+
+  /**
    * Check holder growth guard
    * @param {string} mint - Token mint
    * @param {number} requiredGrowth - Required holder growth
@@ -197,7 +252,7 @@ class EnhancedAlertEngine {
    * @param {object} features - Token features
    * @returns {string} Explainable alert message
    */
-  generateExplainableAlert(token, alertType, thresholds, features) {
+  generateExplainableAlert(token, alertType, thresholds, features, knownActorsText = '', probabilityText = '') {
     const tokenDisplay = formatTokenDisplayWithHealth(token.symbol, token.mint, token.health_score, false);
     const healthBadge = formatHealthBadge(token.health_score, false);
     const liquidity = token.liquidity_usd ? `$${(token.liquidity_usd / 1000).toFixed(1)}k` : '$0';
@@ -226,16 +281,18 @@ Fresh ${(features.freshPct * 100).toFixed(0)}% • Snipers ${(features.sniperPct
 
     const whyLine = whyReasons.length > 0 ? `\nWhy: ${whyReasons.join(', ')}` : '';
     const riskLine = riskCaveats.length > 0 ? `\n⚠️ ${riskCaveats.join(', ')}` : '';
+    const actorsLine = knownActorsText ? `\n${knownActorsText}` : '';
+    const probabilityLine = probabilityText ? `\n${probabilityText}` : '';
 
     switch (alertType) {
       case 'launch':
-        return `🚀 ${tokenDisplay} • Health ${token.health_score.toFixed(0)} ${healthBadge}${whyLine}${riskLine}`;
+        return `🚀 ${tokenDisplay} • Health ${token.health_score.toFixed(0)} ${healthBadge}${whyLine}${riskLine}${actorsLine}${probabilityLine}`;
       case 'momentum_upgrade':
-        return `📈 ${tokenDisplay} • Health ${token.health_score.toFixed(0)} ${healthBadge}${whyLine}${riskLine}`;
+        return `📈 ${tokenDisplay} • Health ${token.health_score.toFixed(0)} ${healthBadge}${whyLine}${riskLine}${actorsLine}${probabilityLine}`;
       case 'risk':
-        return `⚠️ ${tokenDisplay} • Health ${token.health_score.toFixed(0)} ${healthBadge}${whyLine}${riskLine}`;
+        return `⚠️ ${tokenDisplay} • Health ${token.health_score.toFixed(0)} ${healthBadge}${whyLine}${riskLine}${actorsLine}${probabilityLine}`;
       default:
-        return `🔔 ${tokenDisplay} • Health ${token.health_score.toFixed(0)} ${healthBadge}${whyLine}${riskLine}`;
+        return `🔔 ${tokenDisplay} • Health ${token.health_score.toFixed(0)} ${healthBadge}${whyLine}${riskLine}${actorsLine}${probabilityLine}`;
     }
   }
 
@@ -338,7 +395,21 @@ Fresh ${(features.freshPct * 100).toFixed(0)}% • Snipers ${(features.sniperPct
         top10Pct: token.top10_share || 0
       };
 
-      const message = this.generateExplainableAlert(token, rule.alert_type, thresholds, features);
+      // Get known actor information
+      const knownActors = this.getKnownActors(mint);
+      const knownActorsText = this.formatKnownActors(knownActors);
+
+      // Check probability thresholds
+      if (!this.checkProbabilityThresholds(token, rule.alert_type)) {
+        logger.debug('alert-engine', mint, 'probability_threshold_failed', 
+          `Alert for ${symbol} failed probability thresholds`);
+        return;
+      }
+
+      // Get probability information
+      const probabilityText = this.formatProbabilityInfo(token);
+
+      const message = this.generateExplainableAlert(token, rule.alert_type, thresholds, features, knownActorsText, probabilityText);
       const metadata = JSON.stringify({
         health_score: token.health_score,
         holders_count: token.holders_count,
@@ -349,7 +420,12 @@ Fresh ${(features.freshPct * 100).toFixed(0)}% • Snipers ${(features.sniperPct
         top10_share: token.top10_share,
         rule_name: rule.rule_name,
         why_fired: this.getWhyFired(token, rule.alert_type, thresholds, features),
-        risk_caveats: this.getRiskCaveats(token, features)
+        risk_caveats: this.getRiskCaveats(token, features),
+        known_actors: knownActors,
+        prob_2x_24h: token.prob_2x_24h,
+        prob_rug_24h: token.prob_rug_24h,
+        model_id_win: token.model_id_win,
+        model_id_rug: token.model_id_rug
       });
 
       // Insert alert
@@ -372,6 +448,73 @@ Fresh ${(features.freshPct * 100).toFixed(0)}% • Snipers ${(features.sniperPct
     } catch (error) {
       logger.error('alert-engine', mint, 'alert_failed', `Failed to process enhanced alerts for ${symbol}: ${error.message}`);
     }
+  }
+
+  /**
+   * Get known actor information for a token
+   * @param {string} mint - Token mint
+   * @returns {object} Known actor counts and details
+   */
+  getKnownActors(mint) {
+    try {
+      const actors = db.prepare(`
+        SELECT 
+          COUNT(DISTINCT CASE WHEN h.is_sniper = 1 AND wr.reputation_score >= 60 THEN h.owner END) as bad_snipers,
+          COUNT(DISTINCT CASE WHEN h.is_bundler = 1 AND wr.reputation_score >= 60 THEN h.owner END) as bad_bundlers,
+          COUNT(DISTINCT CASE WHEN h.is_insider = 1 AND wr.reputation_score >= 60 THEN h.owner END) as bad_insiders,
+          COUNT(DISTINCT CASE WHEN h.is_sniper = 1 THEN h.owner END) as total_snipers,
+          COUNT(DISTINCT CASE WHEN h.is_bundler = 1 THEN h.owner END) as total_bundlers,
+          COUNT(DISTINCT CASE WHEN h.is_insider = 1 THEN h.owner END) as total_insiders
+        FROM holders h
+        LEFT JOIN wallet_reputation wr ON h.owner = wr.wallet
+        WHERE h.mint = ?
+      `).get(mint);
+
+      return {
+        badSnipers: actors.bad_snipers || 0,
+        badBundlers: actors.bad_bundlers || 0,
+        badInsiders: actors.bad_insiders || 0,
+        totalSnipers: actors.total_snipers || 0,
+        totalBundlers: actors.total_bundlers || 0,
+        totalInsiders: actors.total_insiders || 0
+      };
+    } catch (error) {
+      logger.error('alert-engine', mint, 'known_actors_error', `Failed to get known actors: ${error.message}`);
+      return {
+        badSnipers: 0,
+        badBundlers: 0,
+        badInsiders: 0,
+        totalSnipers: 0,
+        totalBundlers: 0,
+        totalInsiders: 0
+      };
+    }
+  }
+
+  /**
+   * Format known actor information for alerts
+   * @param {object} actors - Known actor data
+   * @returns {string} Formatted actor information
+   */
+  formatKnownActors(actors) {
+    const parts = [];
+    
+    if (actors.totalSnipers > 0) {
+      const highRep = actors.badSnipers > 0 ? ` (${actors.badSnipers} high-rep)` : '';
+      parts.push(`Snipers ${actors.totalSnipers}${highRep}`);
+    }
+    
+    if (actors.totalBundlers > 0) {
+      const highRep = actors.badBundlers > 0 ? ` (${actors.badBundlers} high-rep)` : '';
+      parts.push(`Bundlers ${actors.totalBundlers}${highRep}`);
+    }
+    
+    if (actors.totalInsiders > 0) {
+      const highRep = actors.badInsiders > 0 ? ` (${actors.badInsiders} high-rep)` : '';
+      parts.push(`Insiders ${actors.totalInsiders}${highRep}`);
+    }
+    
+    return parts.length > 0 ? `Known actors: ${parts.join(', ')}` : '';
   }
 
   /**

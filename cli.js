@@ -1470,6 +1470,377 @@ function runEnhancedRugRiskScorer() {
     });
 }
 
+function showWalletReputation(wallet) {
+    if (!wallet) {
+        console.log('❌ Usage: node cli.js wallet <WALLET>');
+        return;
+    }
+
+    try {
+        const reputation = db.prepare(`
+            SELECT 
+                wallet,
+                snipes_total,
+                snipes_success,
+                bundles_total,
+                recipients_total,
+                insider_hits,
+                rug_involved,
+                reputation_score,
+                score_breakdown,
+                last_seen_at,
+                updated_at
+            FROM wallet_reputation
+            WHERE wallet = ?
+        `).get(wallet);
+
+        if (!reputation) {
+            console.log(`❌ No reputation data found for wallet: ${wallet}`);
+            return;
+        }
+
+        console.log(`🔍 Wallet Reputation: ${wallet}`);
+        console.log(`📊 Reputation Score: ${reputation.reputation_score.toFixed(1)}/100`);
+        console.log(`📈 Snipes: ${reputation.snipes_total} (${reputation.snipes_success} successful)`);
+        console.log(`📦 Bundles: ${reputation.bundles_total} (${reputation.recipients_total} recipients)`);
+        console.log(`🎯 Insider Hits: ${reputation.insider_hits}`);
+        console.log(`💀 Rug Involved: ${reputation.rug_involved}`);
+        console.log(`🕒 Last Seen: ${reputation.last_seen_at}`);
+        console.log(`🔄 Updated: ${reputation.updated_at}`);
+
+        if (reputation.score_breakdown) {
+            try {
+                const breakdown = JSON.parse(reputation.score_breakdown);
+                console.log(`\n📋 Score Breakdown:`);
+                console.log(`   S_snipes: ${breakdown.S_snipes}`);
+                console.log(`   S_bundles: ${breakdown.S_bundles}`);
+                console.log(`   S_insider: ${breakdown.S_insider}`);
+                console.log(`   S_rug: ${breakdown.S_rug}`);
+                console.log(`   S_reward: ${breakdown.S_reward}`);
+                if (breakdown.is_market_maker) {
+                    console.log(`   🏦 Market Maker (penalty: ${breakdown.penalty_factor})`);
+                }
+            } catch (e) {
+                console.log(`   Raw breakdown: ${reputation.score_breakdown}`);
+            }
+        }
+    } catch (error) {
+        console.log(`❌ Error fetching wallet reputation: ${error.message}`);
+    }
+}
+
+function showWalletTop(limit = 10) {
+    const validatedLimit = validateNumber(limit, 10);
+    
+    try {
+        const wallets = db.prepare(`
+            SELECT 
+                wallet,
+                reputation_score,
+                snipes_total,
+                bundles_total,
+                insider_hits,
+                rug_involved,
+                last_seen_at
+            FROM wallet_reputation
+            WHERE reputation_score > 0
+            ORDER BY reputation_score DESC
+            LIMIT ?
+        `).all(validatedLimit);
+
+        if (wallets.length === 0) {
+            console.log('❌ No wallet reputation data found');
+            return;
+        }
+
+        console.log(`🏆 Top ${validatedLimit} Worst Actors (by reputation score):`);
+        console.log('');
+
+        wallets.forEach((wallet, index) => {
+            const riskLevel = wallet.reputation_score >= 80 ? '🔴' : 
+                             wallet.reputation_score >= 60 ? '🟠' : 
+                             wallet.reputation_score >= 40 ? '🟡' : '🟢';
+            
+            console.log(`${index + 1}. ${riskLevel} ${wallet.wallet}`);
+            console.log(`   Score: ${wallet.reputation_score.toFixed(1)} | Snipes: ${wallet.snipes_total} | Bundles: ${wallet.bundles_total}`);
+            console.log(`   Insiders: ${wallet.insider_hits} | Rugs: ${wallet.rug_involved} | Last: ${wallet.last_seen_at}`);
+            console.log('');
+        });
+    } catch (error) {
+        console.log(`❌ Error fetching top wallets: ${error.message}`);
+    }
+}
+
+function showWalletClassesWithReputation(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js classes <MINT>');
+        return;
+    }
+
+    try {
+        // Get wallet classes with reputation data
+        const classes = db.prepare(`
+            SELECT 
+                h.owner,
+                h.amount,
+                h.is_inception,
+                h.is_sniper,
+                h.is_bundler,
+                h.is_insider,
+                wr.reputation_score,
+                wr.snipes_total,
+                wr.bundles_total,
+                wr.insider_hits,
+                wr.rug_involved
+            FROM holders h
+            LEFT JOIN wallet_reputation wr ON h.owner = wr.wallet
+            WHERE h.mint = ?
+            ORDER BY CAST(h.amount AS REAL) DESC
+            LIMIT 50
+        `).all(mint);
+
+        if (classes.length === 0) {
+            console.log(`❌ No holders found for mint: ${mint}`);
+            return;
+        }
+
+        console.log(`👥 Wallet Classes for ${mint}:`);
+        console.log('');
+
+        // Group by class and count high-rep actors
+        const classStats = {
+            inception: { total: 0, highRep: 0, wallets: [] },
+            sniper: { total: 0, highRep: 0, wallets: [] },
+            bundler: { total: 0, highRep: 0, wallets: [] },
+            insider: { total: 0, highRep: 0, wallets: [] },
+            other: { total: 0, highRep: 0, wallets: [] }
+        };
+
+        classes.forEach(holder => {
+            const isHighRep = holder.reputation_score >= 60;
+            const classes = [];
+            
+            if (holder.is_inception) classes.push('inception');
+            if (holder.is_sniper) classes.push('sniper');
+            if (holder.is_bundler) classes.push('bundler');
+            if (holder.is_insider) classes.push('insider');
+            if (classes.length === 0) classes.push('other');
+
+            classes.forEach(cls => {
+                classStats[cls].total++;
+                if (isHighRep) classStats[cls].highRep++;
+                classStats[cls].wallets.push({
+                    wallet: holder.owner,
+                    amount: holder.amount,
+                    reputation: holder.reputation_score || 0,
+                    snipes: holder.snipes_total || 0,
+                    bundles: holder.bundles_total || 0,
+                    insiders: holder.insider_hits || 0,
+                    rugs: holder.rug_involved || 0
+                });
+            });
+        });
+
+        // Display class statistics
+        Object.entries(classStats).forEach(([className, stats]) => {
+            if (stats.total > 0) {
+                const highRepPct = ((stats.highRep / stats.total) * 100).toFixed(1);
+                console.log(`📊 ${className.toUpperCase()}: ${stats.total} total (${stats.highRep} high-rep, ${highRepPct}%)`);
+                
+                // Show top high-rep wallets in this class
+                const highRepWallets = stats.wallets
+                    .filter(w => w.reputation >= 60)
+                    .sort((a, b) => b.reputation - a.reputation)
+                    .slice(0, 3);
+                
+                if (highRepWallets.length > 0) {
+                    console.log(`   🚨 High-rep actors:`);
+                    highRepWallets.forEach(w => {
+                        console.log(`      ${w.wallet} (${w.reputation.toFixed(1)}) - S:${w.snipes} B:${w.bundles} I:${w.insiders} R:${w.rugs}`);
+                    });
+                }
+                console.log('');
+            }
+        });
+    } catch (error) {
+        console.log(`❌ Error fetching wallet classes: ${error.message}`);
+    }
+}
+
+function showBadActors(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js bad-actors <MINT>');
+        return;
+    }
+
+    try {
+        // Get high-rep actors involved with this token
+        const badActors = db.prepare(`
+            SELECT DISTINCT
+                h.owner as wallet,
+                wr.reputation_score,
+                wr.snipes_total,
+                wr.bundles_total,
+                wr.insider_hits,
+                wr.rug_involved,
+                h.is_sniper,
+                h.is_bundler,
+                h.is_insider,
+                h.amount,
+                wr.last_seen_at
+            FROM holders h
+            JOIN wallet_reputation wr ON h.owner = wr.wallet
+            WHERE h.mint = ? 
+              AND wr.reputation_score >= 60
+            ORDER BY wr.reputation_score DESC
+        `).all(mint);
+
+        if (badActors.length === 0) {
+            console.log(`✅ No high-reputation bad actors found for ${mint}`);
+            return;
+        }
+
+        console.log(`🚨 High-Reputation Bad Actors for ${mint}:`);
+        console.log('');
+
+        badActors.forEach((actor, index) => {
+            const roles = [];
+            if (actor.is_sniper) roles.push('Sniper');
+            if (actor.is_bundler) roles.push('Bundler');
+            if (actor.is_insider) roles.push('Insider');
+            
+            const why = [];
+            if (actor.snipes_total > 0) why.push(`${actor.snipes_total} snipes`);
+            if (actor.bundles_total > 0) why.push(`${actor.bundles_total} bundles`);
+            if (actor.insider_hits > 0) why.push(`${actor.insider_hits} insider hits`);
+            if (actor.rug_involved > 0) why.push(`${actor.rug_involved} rug involvement`);
+
+            console.log(`${index + 1}. 🔴 ${actor.wallet}`);
+            console.log(`   Score: ${actor.reputation_score.toFixed(1)} | Roles: ${roles.join(', ') || 'None'}`);
+            console.log(`   Why: ${why.join(', ')} | Amount: ${actor.amount}`);
+            console.log(`   Last seen: ${actor.last_seen_at}`);
+            console.log('');
+        });
+    } catch (error) {
+        console.log(`❌ Error fetching bad actors: ${error.message}`);
+    }
+}
+
+function showPredict(mint) {
+    if (!mint) {
+        console.log('❌ Usage: node cli.js predict <MINT>');
+        return;
+    }
+
+    try {
+        const token = db.prepare(`
+            SELECT 
+                t.mint, t.symbol, t.name, t.health_score, t.liquidity_usd,
+                t.prob_2x_24h, t.prob_rug_24h, t.model_id_win, t.model_id_rug,
+                tp_win.explainability as explain_win,
+                tp_rug.explainability as explain_rug
+            FROM tokens t
+            LEFT JOIN token_predictions tp_win ON t.mint = tp_win.mint 
+                AND tp_win.target = '2x_24h' 
+                AND tp_win.ts = (
+                    SELECT MAX(ts) FROM token_predictions tp2 
+                    WHERE tp2.mint = t.mint AND tp2.target = '2x_24h'
+                )
+            LEFT JOIN token_predictions tp_rug ON t.mint = tp_rug.mint 
+                AND tp_rug.target = 'rug_24h' 
+                AND tp_rug.ts = (
+                    SELECT MAX(ts) FROM token_predictions tp3 
+                    WHERE tp3.mint = t.mint AND tp3.target = 'rug_24h'
+                )
+            WHERE t.mint = ?
+        `).get(mint);
+
+        if (!token) {
+            console.log(`❌ Token not found: ${mint}`);
+            return;
+        }
+
+        console.log(`🔮 Probability Prediction: ${token.symbol} (${mint})`);
+        console.log(`📊 Health Score: ${token.health_score || 'N/A'}`);
+        console.log(`💰 Liquidity: $${token.liquidity_usd ? (token.liquidity_usd / 1000).toFixed(1) + 'k' : 'N/A'}`);
+        console.log('');
+
+        if (token.prob_2x_24h !== null) {
+            const prob2x = token.prob_2x_24h * 100;
+            const color2x = prob2x >= 40 ? '🟢' : prob2x >= 25 ? '🟡' : '🔵';
+            console.log(`${color2x} Prob2x 24h: ${prob2x.toFixed(1)}%`);
+            if (token.explain_win) {
+                console.log(`   Why: ${token.explain_win}`);
+            }
+            console.log(`   Model: ${token.model_id_win || 'N/A'}`);
+        } else {
+            console.log('🔵 Prob2x 24h: Not available');
+        }
+
+        if (token.prob_rug_24h !== null) {
+            const probRug = token.prob_rug_24h * 100;
+            const colorRug = probRug >= 60 ? '🔴' : probRug >= 30 ? '🟠' : '🟢';
+            console.log(`${colorRug} ProbRug 24h: ${probRug.toFixed(1)}%`);
+            if (token.explain_rug) {
+                console.log(`   Why: ${token.explain_rug}`);
+            }
+            console.log(`   Model: ${token.model_id_rug || 'N/A'}`);
+        } else {
+            console.log('🟢 ProbRug 24h: Not available');
+        }
+
+        console.log('');
+        console.log(`Copy mint: \`${mint}\``);
+
+    } catch (error) {
+        console.log(`❌ Error fetching prediction: ${error.message}`);
+    }
+}
+
+function showBacktestLast() {
+    try {
+        const backtest = db.prepare(`
+            SELECT * FROM backtest_runs
+            ORDER BY created_at DESC
+            LIMIT 1
+        `).get();
+
+        if (!backtest) {
+            console.log('❌ No backtest results found');
+            return;
+        }
+
+        const metrics = JSON.parse(backtest.metrics);
+        const thresholds = JSON.parse(backtest.thresholds);
+
+        console.log('📊 Latest Backtest Results:');
+        console.log(`Run ID: ${backtest.run_id}`);
+        console.log(`Created: ${backtest.created_at}`);
+        console.log('');
+
+        console.log('🎯 Winner Model (2x_24h):');
+        console.log(`   AUROC: ${metrics.winner?.auroc?.toFixed(3) || 'N/A'}`);
+        console.log(`   AUPRC: ${metrics.winner?.auprc?.toFixed(3) || 'N/A'}`);
+        console.log(`   Brier: ${metrics.winner?.brier?.toFixed(3) || 'N/A'}`);
+        console.log('');
+
+        console.log('🚨 Rug Model (rug_24h):');
+        console.log(`   AUROC: ${metrics.rug?.auroc?.toFixed(3) || 'N/A'}`);
+        console.log(`   AUPRC: ${metrics.rug?.auprc?.toFixed(3) || 'N/A'}`);
+        console.log(`   Brier: ${metrics.rug?.brier?.toFixed(3) || 'N/A'}`);
+        console.log('');
+
+        console.log('⚙️ Operating Thresholds:');
+        console.log(`   Prob2x ≥ ${(thresholds.prob2x_threshold * 100).toFixed(0)}% for Pro alerts`);
+        console.log(`   Prob2x ≥ ${(thresholds.prob2x_free_threshold * 100).toFixed(0)}% for Free alerts`);
+        console.log(`   ProbRug ≥ ${(thresholds.probrug_risk_threshold * 100).toFixed(0)}% for Risk alerts`);
+        console.log(`   ProbRug ≥ ${(thresholds.probrug_immediate_threshold * 100).toFixed(0)}% for immediate Rug alerts`);
+
+    } catch (error) {
+        console.log(`❌ Error fetching backtest results: ${error.message}`);
+    }
+}
+
 function showHelp() {
     console.log(`
 🚀 Memecoin Agent CLI
@@ -1478,6 +1849,16 @@ Commands:
   recent [N]           Show recent tokens (default: 20)
   recent-pump [N]      Show recent Pump.fun tokens (default: 20)
   candidates [N]       Show candidate tokens (default: 20)
+  
+  Wallet Intelligence (Task 12):
+  wallet <WALLET>      Show wallet reputation details
+  wallet-top [N]       Show top worst actors by reputation (default: 10)
+  classes <MINT>       Show wallet classes with high-rep counts
+  bad-actors <MINT>    Show high-rep bad actors for a token
+  
+  Advanced Scoring (Task 13):
+  predict <MINT>       Show probability predictions for a token
+  backtest-last        Show latest backtest results and metrics
   events <MINT>        Show events for specific token
   holders <MINT> [N]   Show top holders for specific token (default: 20)
   momentum <MINT> [N]  Show holder growth momentum over time (default: 20)
@@ -1702,6 +2083,19 @@ if (cmd === 'recent') {
     runEnhancedPoolIntrospector();
 } else if (cmd === 'enhanced-rug-risk-scorer') {
     runEnhancedRugRiskScorer();
+} else if (cmd === 'wallet') {
+    showWalletReputation(process.argv[3]);
+} else if (cmd === 'wallet-top') {
+    const limit = process.argv[3];
+    showWalletTop(limit);
+} else if (cmd === 'classes') {
+    showWalletClassesWithReputation(process.argv[3]);
+} else if (cmd === 'bad-actors') {
+    showBadActors(process.argv[3]);
+} else if (cmd === 'predict') {
+    showPredict(process.argv[3]);
+} else if (cmd === 'backtest-last') {
+    showBacktestLast();
 } else if (cmd === 'help' || cmd === '--help' || cmd === '-h') {
     showHelp();
 } else {

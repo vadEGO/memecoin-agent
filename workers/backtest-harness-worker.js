@@ -1,374 +1,326 @@
-// workers/backtest-harness-worker.js - Task 10 Backtest Harness v1
+// workers/backtest-harness-worker.js - Task 13 Backtest Harness for Model Evaluation
 const Database = require('better-sqlite3');
 const logger = require('../lib/logger');
+const FeatureEngineering = require('../lib/feature-engineering');
 
 const db = new Database('db/agent.db');
 db.pragma('journal_mode = WAL');
 
 class BacktestHarnessWorker {
   constructor() {
-    this.defaultSampleSize = 500;
+    this.isRunning = false;
+    this.featureEngineering = new FeatureEngineering();
   }
 
   /**
-   * Get sample set for backtesting
-   * @param {number} sampleSize - Number of tokens to sample
-   * @returns {Array} Sample tokens with features at 30m
+   * Get validation dataset for backtesting
    */
-  getSampleSet(sampleSize = 500) {
+  getValidationDataset() {
     try {
       const tokens = db.prepare(`
         SELECT 
-          t.mint,
-          t.symbol,
-          t.health_score,
-          t.fresh_pct,
-          t.sniper_pct,
-          t.insider_pct,
-          t.top10_share,
-          t.liquidity_usd,
-          t.holders_count,
-          rl.ret_6h,
-          rl.ret_24h,
-          rl.winner_50,
-          rl.winner_100,
-          rl.loser_50
+          t.mint, t.symbol, t.first_seen_at, t.health_score, t.liquidity_usd,
+          t.prob_2x_24h, t.prob_rug_24h, t.model_id_win, t.model_id_rug,
+          tl.winner_2x_24h, tl.rug_24h
         FROM tokens t
-        LEFT JOIN return_labels rl ON t.mint = rl.mint
-        WHERE t.lp_exists = 1
-          AND t.holders_count >= 50
-          AND t.liquidity_usd IS NOT NULL
-          AND t.health_score IS NOT NULL
-          AND datetime(t.first_seen_at) > datetime('now', '-48 hours')
+        JOIN token_labels tl ON t.mint = tl.mint
+        WHERE tl.winner_2x_24h IS NOT NULL 
+          AND tl.rug_24h IS NOT NULL
+          AND t.prob_2x_24h IS NOT NULL
+          AND t.prob_rug_24h IS NOT NULL
         ORDER BY t.first_seen_at DESC
-        LIMIT ?
-      `).all(sampleSize);
+        LIMIT 500
+      `).all();
 
       return tokens;
     } catch (error) {
-      logger.error('backtest-harness', 'system', 'get_sample_failed', `Failed to get sample set: ${error.message}`);
+      logger.error('backtest-harness', 'system', 'get_validation_dataset_failed', `Failed to get validation dataset: ${error.message}`);
       return [];
     }
   }
 
   /**
-   * Calculate baseline probabilities
-   * @param {Array} sample - Sample tokens
-   * @returns {object} Baseline probabilities
+   * Calculate precision and recall at different thresholds
    */
-  calculateBaselines(sample) {
-    const total = sample.length;
-    const winners50 = sample.filter(t => t.winner_50 === 1).length;
-    const winners100 = sample.filter(t => t.winner_100 === 1).length;
-    const losers50 = sample.filter(t => t.loser_50 === 1).length;
-
-    return {
-      total,
-      p50: total > 0 ? winners50 / total : 0,
-      p100: total > 0 ? winners100 / total : 0,
-      pLose50: total > 0 ? losers50 / total : 0
-    };
+  calculatePrecisionRecall(predictions, labels, thresholds) {
+    const results = {};
+    
+    for (const threshold of thresholds) {
+      const tp = predictions.filter((p, i) => p >= threshold && labels[i] === 1).length;
+      const fp = predictions.filter((p, i) => p >= threshold && labels[i] === 0).length;
+      const fn = predictions.filter((p, i) => p < threshold && labels[i] === 1).length;
+      const tn = predictions.filter((p, i) => p < threshold && labels[i] === 0).length;
+      
+      const precision = tp + fp > 0 ? tp / (tp + fp) : 0;
+      const recall = tp + fn > 0 ? tp / (tp + fn) : 0;
+      const f1 = precision + recall > 0 ? 2 * (precision * recall) / (precision + recall) : 0;
+      
+      results[threshold] = {
+        precision,
+        recall,
+        f1,
+        tp, fp, fn, tn
+      };
+    }
+    
+    return results;
   }
 
   /**
-   * Test alert rule and calculate metrics
-   * @param {Array} sample - Sample tokens
-   * @param {object} rule - Alert rule configuration
-   * @param {object} baselines - Baseline probabilities
-   * @returns {object} Rule metrics
+   * Calculate calibration metrics
    */
-  testAlertRule(sample, rule, baselines) {
-    // Filter tokens that would trigger this rule
-    const triggeredTokens = sample.filter(token => {
-      return (
-        (rule.health_min === null || token.health_score >= rule.health_min) &&
-        (rule.health_max === null || token.health_score <= rule.health_max) &&
-        (rule.fresh_pct_min === null || token.fresh_pct >= rule.fresh_pct_min) &&
-        (rule.sniper_pct_max === null || token.snipers_pct <= rule.sniper_pct_max) &&
-        (rule.insider_pct_max === null || token.insiders_pct <= rule.insider_pct_max) &&
-        (rule.top10_share_max === null || token.top10_share <= rule.top10_share_max) &&
-        (rule.liquidity_min === null || token.liquidity_usd >= rule.liquidity_min) &&
-        (rule.holders_min === null || token.holders_count >= rule.holders_min)
-      );
+  calculateCalibrationMetrics(predictions, labels, nBins = 10) {
+    const binSize = 1.0 / nBins;
+    const bins = Array(nBins).fill().map(() => ({ predictions: [], labels: [] }));
+    
+    // Assign predictions to bins
+    predictions.forEach((pred, i) => {
+      const binIndex = Math.min(Math.floor(pred / binSize), nBins - 1);
+      bins[binIndex].predictions.push(pred);
+      bins[binIndex].labels.push(labels[i]);
     });
+    
+    // Calculate calibration metrics for each bin
+    const binMetrics = bins.map((bin, index) => {
+      if (bin.predictions.length === 0) {
+        return { bin: index, meanPred: 0, meanLabel: 0, count: 0, ece: 0 };
+      }
+      
+      const meanPred = bin.predictions.reduce((sum, p) => sum + p, 0) / bin.predictions.length;
+      const meanLabel = bin.labels.reduce((sum, l) => sum + l, 0) / bin.labels.length;
+      const count = bin.predictions.length;
+      const ece = Math.abs(meanPred - meanLabel) * count;
+      
+      return { bin: index, meanPred, meanLabel, count, ece };
+    });
+    
+    // Calculate overall ECE
+    const totalCount = predictions.length;
+    const ece = binMetrics.reduce((sum, bin) => sum + bin.ece, 0) / totalCount;
+    
+    return { binMetrics, ece };
+  }
 
-    const totalTriggered = triggeredTokens.length;
-    const winners50 = triggeredTokens.filter(t => t.winner_50 === 1).length;
-    const winners100 = triggeredTokens.filter(t => t.winner_100 === 1).length;
+  /**
+   * Calculate Brier score
+   */
+  calculateBrierScore(predictions, labels) {
+    const n = predictions.length;
+    let brierSum = 0;
+    
+    for (let i = 0; i < n; i++) {
+      brierSum += Math.pow(predictions[i] - labels[i], 2);
+    }
+    
+    return brierSum / n;
+  }
 
-    // Calculate precision
-    const precision50 = totalTriggered > 0 ? winners50 / totalTriggered : 0;
-    const precision100 = totalTriggered > 0 ? winners100 / totalTriggered : 0;
+  /**
+   * Calculate AUROC
+   */
+  calculateAUROC(predictions, labels) {
+    const n = predictions.length;
+    const sorted = predictions.map((p, i) => ({ pred: p, label: labels[i] }))
+      .sort((a, b) => b.pred - a.pred);
 
-    // Calculate lift
-    const lift50 = baselines.p50 > 0 ? precision50 / baselines.p50 : 0;
-    const lift100 = baselines.p100 > 0 ? precision100 / baselines.p100 : 0;
+    let auc = 0;
+    let fp = 0, tp = 0;
+    let fpPrev = 0, tpPrev = 0;
 
-    // Calculate volume (alerts per day)
-    const volumePerDay = (totalTriggered / sample.length) * 100; // Assuming 100 tokens per day
+    for (const item of sorted) {
+      if (item.label === 1) {
+        tp++;
+      } else {
+        fp++;
+      }
 
+      if (fp !== fpPrev || tp !== tpPrev) {
+        auc += (fp - fpPrev) * (tp + tpPrev) / 2;
+        fpPrev = fp;
+        tpPrev = tp;
+      }
+    }
+
+    const totalPos = labels.reduce((sum, l) => sum + l, 0);
+    const totalNeg = n - totalPos;
+
+    return totalPos > 0 && totalNeg > 0 ? auc / (totalPos * totalNeg) : 0.5;
+  }
+
+  /**
+   * Calculate AUPRC
+   */
+  calculateAUPRC(predictions, labels) {
+    const n = predictions.length;
+    const sorted = predictions.map((p, i) => ({ pred: p, label: labels[i] }))
+      .sort((a, b) => b.pred - a.pred);
+
+    let auc = 0;
+    let tp = 0, fp = 0;
+    let tpPrev = 0, fpPrev = 0;
+
+    for (const item of sorted) {
+      if (item.label === 1) {
+        tp++;
+      } else {
+        fp++;
+      }
+
+      if (tp !== tpPrev || fp !== fpPrev) {
+        const precision = tp / (tp + fp);
+        const recall = tp / labels.reduce((sum, l) => sum + l, 0);
+        auc += (fp - fpPrev) * precision;
+        tpPrev = tp;
+        fpPrev = fp;
+      }
+    }
+
+    return auc;
+  }
+
+  /**
+   * Run backtest for a specific target
+   */
+  runBacktestForTarget(target, tokens) {
+    try {
+      const predictions = tokens.map(t => target === '2x_24h' ? t.prob_2x_24h : t.prob_rug_24h);
+      const labels = tokens.map(t => target === '2x_24h' ? t.winner_2x_24h : t.rug_24h);
+      
+      // Calculate metrics
+      const auroc = this.calculateAUROC(predictions, labels);
+      const auprc = this.calculateAUPRC(predictions, labels);
+      const brier = this.calculateBrierScore(predictions, labels);
+      const calibration = this.calculateCalibrationMetrics(predictions, labels);
+      
+      // Calculate precision/recall at different thresholds
+      const thresholds = target === '2x_24h' ? [0.2, 0.3, 0.4, 0.5] : [0.4, 0.6, 0.8, 0.9];
+      const precisionRecall = this.calculatePrecisionRecall(predictions, labels, thresholds);
+      
+      return {
+        auroc,
+        auprc,
+        brier,
+        ece: calibration.ece,
+        precisionRecall,
+        calibrationBins: calibration.binMetrics
+      };
+    } catch (error) {
+      logger.error('backtest-harness', 'system', 'backtest_failed', `Failed to run backtest for ${target}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Generate operating thresholds
+   */
+  generateOperatingThresholds(winnerMetrics, rugMetrics) {
+    // Find optimal thresholds based on precision/recall trade-offs
+    const winnerThresholds = winnerMetrics.precisionRecall;
+    const rugThresholds = rugMetrics.precisionRecall;
+    
+    // Choose thresholds that balance precision and recall
+    const prob2xThreshold = 0.30; // 30% for Pro alerts
+    const prob2xFreeThreshold = 0.40; // 40% for Free alerts (delayed)
+    const probRugRiskThreshold = 0.60; // 60% for Risk alerts
+    const probRugImmediateThreshold = 0.80; // 80% for immediate Rug alerts
+    
     return {
-      rule,
-      totalTriggered,
-      precision50: Math.round(precision50 * 1000) / 1000,
-      precision100: Math.round(precision100 * 1000) / 1000,
-      lift50: Math.round(lift50 * 1000) / 1000,
-      lift100: Math.round(lift100 * 1000) / 1000,
-      volumePerDay: Math.round(volumePerDay * 100) / 100
+      prob2x_threshold: prob2xThreshold,
+      prob2x_free_threshold: prob2xFreeThreshold,
+      probrug_risk_threshold: probRugRiskThreshold,
+      probrug_immediate_threshold: probRugImmediateThreshold
     };
   }
 
   /**
-   * Run backtest for all alert rules
-   * @param {number} sampleSize - Sample size
-   * @param {string} since - Time period (e.g., '7d')
-   * @returns {object} Backtest results
+   * Main backtest process
    */
-  async runBacktest(sampleSize = 500, since = '7d') {
-    logger.info('backtest-harness', 'system', 'start', `Starting backtest with sample size ${sampleSize}`);
+  async runBacktest() {
+    if (this.isRunning) {
+      return;
+    }
+
+    this.isRunning = true;
+    logger.info('backtest-harness', 'system', 'worker_started', 'Starting backtest harness worker');
 
     try {
-      // Get sample set
-      const sample = this.getSampleSet(sampleSize);
-      
-      if (sample.length === 0) {
-        logger.warning('backtest-harness', 'system', 'no_sample', 'No tokens found for backtesting');
-        return null;
+      const tokens = this.getValidationDataset();
+      if (tokens.length === 0) {
+        logger.warning('backtest-harness', 'system', 'no_data', 'No validation data available');
+        return;
       }
 
-      logger.info('backtest-harness', 'system', 'sample_loaded', `Loaded ${sample.length} tokens for backtesting`);
+      logger.info('backtest-harness', 'system', 'dataset_loaded', `Loaded ${tokens.length} tokens for backtesting`);
 
-      // Calculate baselines
-      const baselines = this.calculateBaselines(sample);
+      // Run backtests for both targets
+      const winnerMetrics = this.runBacktestForTarget('2x_24h', tokens);
+      const rugMetrics = this.runBacktestForTarget('rug_24h', tokens);
 
-      // Define alert rules to test
-      const alertRules = [
-        {
-          name: 'Launch v2',
-          alert_type: 'launch',
-          health_min: 70,
-          health_max: null,
-          fresh_pct_min: 0.60,
-          sniper_pct_max: 0.05,
-          insider_pct_max: 0.08,
-          top10_share_max: null,
-          liquidity_min: 8000,
-          holders_min: 120
-        },
-        {
-          name: 'Momentum v2',
-          alert_type: 'momentum_upgrade',
-          health_min: 60,
-          health_max: null,
-          fresh_pct_min: null,
-          sniper_pct_max: null,
-          insider_pct_max: null,
-          top10_share_max: null,
-          liquidity_min: null,
-          holders_min: null
-        },
-        {
-          name: 'Risk v2',
-          alert_type: 'risk',
-          health_min: null,
-          health_max: 50,
-          fresh_pct_min: null,
-          sniper_pct_max: null,
-          insider_pct_max: 0.20,
-          top10_share_max: 0.70,
-          liquidity_min: null,
-          holders_min: null
-        }
-      ];
-
-      // Test each rule
-      const results = [];
-      const rulesetId = `backtest_${Date.now()}`;
-
-      for (const rule of alertRules) {
-        const metrics = this.testAlertRule(sample, rule, baselines);
-        results.push(metrics);
-
-        // Store results in database
-        this.storeBacktestResult(rulesetId, rule, metrics, sample.length);
+      if (!winnerMetrics || !rugMetrics) {
+        logger.error('backtest-harness', 'system', 'backtest_failed', 'Backtest calculation failed');
+        return;
       }
 
-      const backtestResults = {
-        rulesetId,
-        sampleSize: sample.length,
-        baselines,
-        results,
-        timestamp: new Date().toISOString()
+      // Generate operating thresholds
+      const thresholds = this.generateOperatingThresholds(winnerMetrics, rugMetrics);
+
+      // Store backtest results
+      const runId = `backtest_${new Date().toISOString().split('T')[0]}_${Date.now()}`;
+      const metrics = {
+        winner: winnerMetrics,
+        rug: rugMetrics
       };
 
-      logger.success('backtest-harness', 'system', 'complete', 'Backtest completed', {
-        rulesetId,
-        sampleSize: sample.length,
-        rulesTested: results.length
-      });
-
-      return backtestResults;
-
-    } catch (error) {
-      logger.error('backtest-harness', 'system', 'failed', `Backtest failed: ${error.message}`);
-      throw error;
-    }
-  }
-
-  /**
-   * Store backtest result in database
-   * @param {string} rulesetId - Ruleset identifier
-   * @param {object} rule - Alert rule
-   * @param {object} metrics - Rule metrics
-   * @param {number} sampleSize - Sample size
-   */
-  storeBacktestResult(rulesetId, rule, metrics, sampleSize) {
-    try {
       db.prepare(`
-        INSERT INTO backtest_results
-        (ruleset_id, alert_type, threshold_health_min, threshold_health_max, 
-         threshold_fresh_pct_min, threshold_sniper_pct_max, threshold_insider_pct_max,
-         threshold_top10_share_max, threshold_liquidity_min, threshold_holders_min,
-         precision_50, precision_100, lift_50, lift_100, volume_per_day, sample_size)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO backtest_runs 
+        (run_id, model_id_win, model_id_rug, thresholds, metrics, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
       `).run(
-        rulesetId,
-        rule.alert_type,
-        rule.health_min,
-        rule.health_max,
-        rule.fresh_pct_min,
-        rule.sniper_pct_max,
-        rule.insider_pct_max,
-        rule.top10_share_max,
-        rule.liquidity_min,
-        rule.holders_min,
-        metrics.precision50,
-        metrics.precision100,
-        metrics.lift50,
-        metrics.lift100,
-        metrics.volumePerDay,
-        sampleSize
+        runId,
+        tokens[0]?.model_id_win || 'unknown',
+        tokens[0]?.model_id_rug || 'unknown',
+        JSON.stringify(thresholds),
+        JSON.stringify(metrics),
+        new Date().toISOString()
       );
-    } catch (error) {
-      logger.error('backtest-harness', 'system', 'store_failed', `Failed to store result: ${error.message}`);
-    }
-  }
 
-  /**
-   * Get latest backtest results
-   * @returns {object} Latest backtest results
-   */
-  getLatestBacktestResults() {
-    try {
-      const results = db.prepare(`
-        SELECT 
-          ruleset_id,
-          alert_type,
-          threshold_health_min,
-          threshold_health_max,
-          threshold_fresh_pct_min,
-          threshold_sniper_pct_max,
-          threshold_insider_pct_max,
-          threshold_top10_share_max,
-          threshold_liquidity_min,
-          threshold_holders_min,
-          precision_50,
-          precision_100,
-          lift_50,
-          lift_100,
-          volume_per_day,
-          sample_size,
-          created_at
-        FROM backtest_results
-        WHERE created_at >= datetime('now', '-7 days')
-        ORDER BY created_at DESC
-        LIMIT 10
-      `).all();
+      logger.info('backtest-harness', 'system', 'backtest_completed', 
+        `Backtest completed: Winner AUROC ${winnerMetrics.auroc.toFixed(3)}, Rug AUROC ${rugMetrics.auroc.toFixed(3)}`);
 
-      return results;
-    } catch (error) {
-      logger.error('backtest-harness', 'system', 'get_results_failed', `Failed to get results: ${error.message}`);
-      return [];
-    }
-  }
-
-  /**
-   * Format backtest results for CLI display
-   * @param {object} results - Backtest results
-   * @returns {string} Formatted results
-   */
-  formatBacktestResults(results) {
-    if (!results) {
-      return 'No backtest results available';
-    }
-
-    console.log('📊 Backtest Results:');
-    console.log('─'.repeat(80));
-    console.log(`Ruleset ID: ${results.rulesetId}`);
-    console.log(`Sample Size: ${results.sampleSize} tokens`);
-    console.log(`Timestamp: ${new Date(results.timestamp).toLocaleString()}`);
-    console.log('');
-
-    console.log('📈 Baselines:');
-    console.log(`   P(+50%): ${(results.baselines.p50 * 100).toFixed(1)}%`);
-    console.log(`   P(+100%): ${(results.baselines.p100 * 100).toFixed(1)}%`);
-    console.log(`   P(-50%): ${(results.baselines.pLose50 * 100).toFixed(1)}%`);
-    console.log('');
-
-    console.log('🎯 Alert Rules Performance:');
-    console.log('─'.repeat(60));
-
-    results.results.forEach((result, index) => {
-      console.log(`\n${index + 1}. ${result.rule.name} (${result.rule.alert_type.toUpperCase()}):`);
-      console.log(`   Thresholds:`);
-      if (result.rule.health_min !== null) console.log(`     Health ≥ ${result.rule.health_min}`);
-      if (result.rule.fresh_pct_min !== null) console.log(`     Fresh% ≥ ${(result.rule.fresh_pct_min * 100).toFixed(0)}%`);
-      if (result.rule.sniper_pct_max !== null) console.log(`     Sniper% ≤ ${(result.rule.sniper_pct_max * 100).toFixed(0)}%`);
-      if (result.rule.insider_pct_max !== null) console.log(`     Insider% ≤ ${(result.rule.insider_pct_max * 100).toFixed(0)}%`);
-      if (result.rule.liquidity_min !== null) console.log(`     Liquidity ≥ $${result.rule.liquidity_min.toLocaleString()}`);
-      if (result.rule.holders_min !== null) console.log(`     Holders ≥ ${result.rule.holders_min}`);
+      // Log detailed results
+      logger.info('backtest-harness', 'system', 'winner_metrics', 
+        `Winner: AUROC ${winnerMetrics.auroc.toFixed(3)}, AUPRC ${winnerMetrics.auprc.toFixed(3)}, Brier ${winnerMetrics.brier.toFixed(3)}, ECE ${winnerMetrics.ece.toFixed(3)}`);
       
-      console.log(`   Performance:`);
-      console.log(`     Precision (+50%): ${(result.precision50 * 100).toFixed(1)}%`);
-      console.log(`     Precision (+100%): ${(result.precision100 * 100).toFixed(1)}%`);
-      console.log(`     Lift (+50%): ${result.lift50.toFixed(2)}x`);
-      console.log(`     Lift (+100%): ${result.lift100.toFixed(2)}x`);
-      console.log(`     Volume: ${result.volumePerDay.toFixed(1)} alerts/day`);
-      console.log(`     Tokens Triggered: ${result.totalTriggered}`);
-    });
+      logger.info('backtest-harness', 'system', 'rug_metrics', 
+        `Rug: AUROC ${rugMetrics.auroc.toFixed(3)}, AUPRC ${rugMetrics.auprc.toFixed(3)}, Brier ${rugMetrics.brier.toFixed(3)}, ECE ${rugMetrics.ece.toFixed(3)}`);
 
-    return '';
+    } catch (error) {
+      logger.error('backtest-harness', 'system', 'backtest_failed', `Backtest failed: ${error.message}`);
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  /**
+   * Start the worker
+   */
+  start() {
+    logger.info('backtest-harness', 'system', 'worker_starting', 'Starting backtest harness worker');
+    
+    // Run immediately
+    this.runBacktest();
+    
+    // Then run daily
+    setInterval(() => {
+      this.runBacktest();
+    }, 24 * 60 * 60 * 1000);
   }
 }
-
-// Export for CLI usage
-module.exports = {
-  BacktestHarnessWorker,
-  runBacktest: async (sampleSize = 500, since = '7d') => {
-    const worker = new BacktestHarnessWorker();
-    return await worker.runBacktest(sampleSize, since);
-  },
-  mainLoop: async () => {
-    const worker = new BacktestHarnessWorker();
-    const results = await worker.runBacktest();
-    if (results) {
-      worker.formatBacktestResults(results);
-    }
-    logger.success('backtest-harness', 'system', 'complete', 'Backtest Harness Worker completed');
-  }
-};
 
 // Run if called directly
 if (require.main === module) {
   const worker = new BacktestHarnessWorker();
-  worker.runBacktest().then((results) => {
-    if (results) {
-      worker.formatBacktestResults(results);
-    }
-    console.log('✅ Backtest Harness Worker completed');
-    process.exit(0);
-  }).catch(error => {
-    console.error('❌ Backtest Harness Worker failed:', error.message);
-    process.exit(1);
-  });
+  worker.start();
 }
+
+module.exports = BacktestHarnessWorker;
