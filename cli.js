@@ -571,6 +571,13 @@ function showScore(mint) {
     console.log(`   Bundler: ${walletTypes.bundler_count || 0}`);
     console.log(`   Insider: ${walletTypes.insider_count || 0}`);
     console.log(`   Fresh: ${(walletTypes.total_holders || 0) - (walletTypes.inception_count || 0)}`);
+    console.log('');
+    console.log('🔗 Links:');
+    console.log(`   Dexscreener: https://dexscreener.com/solana/${mint}`);
+    console.log(`   Birdeye: https://birdeye.so/token/${mint}`);
+    console.log(`   Solscan: https://solscan.io/token/${mint}`);
+    console.log(`   GMGN: https://gmgn.ai/solana/token/${mint}`);
+    console.log(`   Copy: \`${mint}\``);
 }
 
 function showTopTokens(limit = 20) {
@@ -1314,6 +1321,7 @@ function showRugRisk(mint) {
     console.log(`   Dexscreener: https://dexscreener.com/solana/${mint}`);
     console.log(`   Birdeye: https://birdeye.so/token/${mint}`);
     console.log(`   Solscan: https://solscan.io/token/${mint}`);
+    console.log(`   GMGN: https://gmgn.ai/solana/token/${mint}`);
     console.log(`   Copy: \`${mint}\``);
 }
 
@@ -1373,6 +1381,14 @@ function showLiquidityWatch(mint) {
     if ((!delta5m || delta5m > -0.40) && (!delta15m || delta15m > -0.40)) {
         console.log('   ✅ No significant drains detected');
     }
+    
+    console.log('');
+    console.log('🔗 Links:');
+    console.log(`   Dexscreener: https://dexscreener.com/solana/${mint}`);
+    console.log(`   Birdeye: https://birdeye.so/token/${mint}`);
+    console.log(`   Solscan: https://solscan.io/token/${mint}`);
+    console.log(`   GMGN: https://gmgn.ai/solana/token/${mint}`);
+    console.log(`   Copy: \`${mint}\``);
 }
 
 function showCandidatesRisk(limit = 10) {
@@ -1790,7 +1806,12 @@ function showPredict(mint) {
         }
 
         console.log('');
-        console.log(`Copy mint: \`${mint}\``);
+        console.log('🔗 Links:');
+        console.log(`   Dexscreener: https://dexscreener.com/solana/${mint}`);
+        console.log(`   Birdeye: https://birdeye.so/token/${mint}`);
+        console.log(`   Solscan: https://solscan.io/token/${mint}`);
+        console.log(`   GMGN: https://gmgn.ai/solana/token/${mint}`);
+        console.log(`   Copy: \`${mint}\``);
 
     } catch (error) {
         console.log(`❌ Error fetching prediction: ${error.message}`);
